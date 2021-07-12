@@ -8,12 +8,12 @@ INC = include
 
 # compilation related parameters
 CXX      = g++
-CXXFLAGS = -std=c++17
+CXXFLAGS = -std=c++20
 LDFLAGS  = -lnetfilter_queue -lbpf
 
-CLANG      = clang-10
-LLC        = llc-10
-CLANGFLAGS = -D__KERNEL__ -D__BPF_TRACING__ -emit-llvm -O2
+CLANG      = clang
+LLC        = llc
+CLANGFLAGS = -D__KERNEL__ -D__BPF_TRACING__ -emit-llvm -O2 -fno-stack-protector
 LLCFLAGS   = -march=bpf -filetype=obj
 
 
@@ -43,7 +43,7 @@ $(OBJ)/%.o: $(SRC)/app/%.cpp
 
 # eBPF object generation rule
 $(BIN)/%.o: $(SRC)/kern/%.c
-	$(CLANG) $(CLANGFLAGS) -c -o - $< | $(LLC) $(LLCFLAGS) -o $@
+	$(CLANG) $(CLANGFLAGS) -I $(INC) -c -o - $< | $(LLC) $(LLCFLAGS) -o $@
 
 # clean rule
 clean:
