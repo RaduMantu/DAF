@@ -5,6 +5,7 @@
 #include <linux/connector.h>    /* CN_IDX_PROC */
 #include <linux/cn_proc.h>      /* proc_cn_mcast_op, PROC_EVENT_* */
 
+#include "sock_cache.h"
 #include "netlink_helpers.h"
 #include "util.h"
 
@@ -99,41 +100,23 @@ int nl_proc_ev_handle(int nl_fd)
     /* determine event type */
     switch (nlcn_msg.proc_ev.what) {
         case PROC_EVENT_FORK:
-            DEBUG("fork: (pid=%d, tid=%d) ==> (pid=%d, tid=%d)",
-                nlcn_msg.proc_ev.event_data.fork.parent_pid,
-                nlcn_msg.proc_ev.event_data.fork.parent_tgid,
-                nlcn_msg.proc_ev.event_data.fork.child_pid,
-                nlcn_msg.proc_ev.event_data.fork.child_tgid);
+            /* update socket cache state */
+            sc_proc_fork(nlcn_msg.proc_ev.event_data.fork.parent_pid,
+                         nlcn_msg.proc_ev.event_data.fork.child_pid);
+
             break;
         case PROC_EVENT_EXEC:  
-            char procfs_path[16];   /* /proc/<pid>/exe                      */
-            char real_path[1024];   /* real path of /proc/<pid>/exe symlink */
+            /* update socket cache state */
+            sc_proc_exec(nlcn_msg.proc_ev.event_data.exec.process_pid);
 
-            /* get exec-ed binary real path */
-            snprintf(procfs_path, sizeof(procfs_path), "/proc/%u/exe",
-                nlcn_msg.proc_ev.event_data.exec.process_pid);
-
-            memset(real_path, 0, sizeof(real_path));
-            ans = readlink(procfs_path, real_path, sizeof(real_path));
-            RET(ans == -1, -1, "unable to resolve %s symlink", procfs_path);
-
-            DEBUG("exec: (pid=%d, tid=%d) ==> %s",
-                nlcn_msg.proc_ev.event_data.exec.process_pid,
-                nlcn_msg.proc_ev.event_data.exec.process_tgid,
-                real_path);
             break;
         case PROC_EVENT_PTRACE:
-            DEBUG("ptrace: (pid=%d, tid=%d) ==> (pid=%d, tid=%d)",
-                nlcn_msg.proc_ev.event_data.ptrace.tracer_pid,
-                nlcn_msg.proc_ev.event_data.ptrace.tracer_tgid,
-                nlcn_msg.proc_ev.event_data.ptrace.process_pid,
-                nlcn_msg.proc_ev.event_data.ptrace.process_tgid);
+
             break;
         case PROC_EVENT_EXIT:
-            DEBUG("exit: (pid=%d, tid=%d) ==> code=%d",
-                nlcn_msg.proc_ev.event_data.exit.process_pid,
-                nlcn_msg.proc_ev.event_data.exit.process_tgid,
-                nlcn_msg.proc_ev.event_data.exit.exit_code);
+            /* update socket cache state */
+            sc_proc_exit(nlcn_msg.proc_ev.event_data.exit.process_pid);
+
             break;
         /* don't care */
         default:

@@ -1,13 +1,25 @@
 #include <stdio.h>
+#include <stdint.h>             /* [u]int*_t */
 #include <signal.h>             /* signal, siginterrupt */
 #include <unistd.h>             /* read, write, close */
 #include <errno.h>              /* errno */
+#include <arpa/inet.h>
 #include <sys/socket.h>         /* socket */
 #include <sys/inotify.h>        /* inotify */
 #include <sys/epoll.h>          /* epoll */
+#include <sys/resource.h>       /* setrlimit */
+#include <bpf/libbpf.h>
+#include <bpf/bpf.h>
+
+#include <vector>               /* vector */
 
 #include "netlink_helpers.h"
+#include "nfq_helpers.h"
+#include "ebpf_helpers.h"
+#include "sock_cache.h"
 #include "util.h"
+
+using namespace std;
 
 
 static bool bml = false;    /* break main loop */
@@ -21,6 +33,29 @@ static void sigint_handler(int)
 }
 
 
+
+/* nfq_handler - callback routine for NetfilterQueue
+ *  @qh    : netfilter queue handle
+ *  @nfmsg : general form of address family dependent message
+ *  @nfd   : nfq related data for packet evaluation
+ *  @data  : data parameter passe unchanged by nfq_create_queue()
+ *
+ *  @return : 0 if ok, -1 on error (handled by nfq_set_verdict())
+ */
+int nfq_handler(struct nfq_q_handle *qh,
+                struct nfgenmsg     *nfmsg,
+                struct nfq_data     *nfd,
+                void                *data)
+{
+    struct nfqnl_msg_packet_hdr *ph;    /* nfq meta header */
+
+    DEBUG("packet received");
+
+    /* pass unchanged */
+    return nfq_set_verdict(qh, ntohl(ph->packet_id), NF_ACCEPT, 0, NULL);
+}
+
+
 /* main - program entry point
  *  @argc : number of command line arguments & program name
  *  @argv : array of command line arguments & program name
@@ -29,22 +64,42 @@ static void sigint_handler(int)
  */
 int main(int argc, char *argv[])
 {
-    int                netlink_fd;  /* netlink socket          */
-    int                inotify_fd;  /* inotify file descriptor */
-    int                epoll_fd;    /* epoll file descriptor   */
-    struct epoll_event epoll_ev;    /* epoll event             */
-    int                ans;         /* answer                  */
-    sighandler_t       prv_sh;      /* previous signal handler */
+    int                       ans;              /* answer                     */
+    int                       netlink_fd;       /* netlink socket             */
+    int                       inotify_fd;       /* inotify file descriptor    */
+    int                       nfqueue_fd;       /* nfq file descriptor        */
+    int                       bpf_map_fd;       /* eBPF map file descriptor   */
+    int                       epoll_fd;         /* epoll file descriptor      */
+    struct epoll_event        epoll_ev;         /* epoll event                */
+    struct sigaction          act;              /* signal response action     */
+    struct rlimit             rlim;             /* resource limit             */
+    struct bpf_object         *bpf_obj;         /* eBPF object file           */
+    struct bpf_program        *bpf_prog;        /* eBPF program in obj        */
+    vector<struct bpf_link *> bpf_links;        /* links to attached programs */
+    struct ring_buffer        *bpf_ringbuf;     /* eBPF ring buffer reference */
+    struct nfq_handle         *nf_handle;       /* NFQUEUE handle             */
+    struct nfq_q_handle       *nfq_handle;      /* netfilter queue handle     */
+    uint8_t                   pkt_buff[0xffff]; /* nfq packet buffer          */
+    char                      usr_input[256];   /* user stdin input buffer    */
+    ssize_t                   rb;               /* bytes read                 */
 
-    /* set gracious behaviour for Ctrl^C signal */
-    prv_sh = signal(SIGINT, &sigint_handler);
-    WAR(prv_sh == SIG_ERR, "unable to set new SIGINT handler (%d)", errno);
-    INFO("replaced SIGINT handler");
+    /* set gracious behaviour for Ctrl^C signal                            *
+     * because SA_RESTART is not set, interrupted syscalls fail with EINTR */
+    memset(&act, 0, sizeof(act));
+    act.sa_handler = sigint_handler;
+    ans = sigaction(SIGINT, &act, NULL);
+    DIE(ans == -1, "unable to set new SIGINT handler (%d)", errno);
 
-    /* Ctrl^C may interrupt syscall; let it return EINTR and not restart */
-    ans = siginterrupt(SIGINT, true);
-    WAR(ans == -1, "unable to change syscall interrupt behaviour (%d)", errno);
-    INFO("syscalls interrupted by SIGINT now fail with EINTR");
+    /* increase resource limit for eBPF ringbuffer */
+    rlim = {RLIM_INFINITY, RLIM_INFINITY};
+    ans = setrlimit(RLIMIT_MEMLOCK, &rlim);
+    DIE(ans == -1, "unable to set resource limit (%d)", errno);
+    INFO("set new resource limits");
+
+    /* initialize socket cache (just compiles a regex) */
+    ans = sc_init();
+    DIE(ans, "unable to initialize socket cache module");
+    INFO("initialized socket cache module");
 
     /* connect to netlink */
     netlink_fd = nl_connect();
@@ -53,12 +108,55 @@ int main(int argc, char *argv[])
 
     /* create inotify instance */
     inotify_fd = inotify_init1(IN_CLOEXEC);
-    DIE(inotify_fd == -1, "failed to create inotify instance (%d)", errno);
+    GOTO(inotify_fd == -1, clean_netlink_fd,
+        "failed to create inotify instance (%d)", errno);
     INFO("inotify instance created");
+
+    /* open eBPF object file */
+    bpf_obj = bpf_object__open_file(argv[1], NULL);
+    GOTO(libbpf_get_error(bpf_obj), clean_inotify_fd,
+        "unable to open eBPF object");
+    INFO("opened eBPF object file");
+
+    /* load eBPF object into kernel verifier */
+    ans = bpf_object__load(bpf_obj);
+    GOTO(ans, clean_bpf_obj, "unable to load eBPF object");
+    INFO("loaded eBPF object file (passed verification)");
+
+    /* get reference to map of RINGBUF type */
+    bpf_map_fd = bpf_object__find_map_fd_by_name(bpf_obj, "buffer");
+    GOTO(bpf_map_fd < 0, clean_bpf_obj, "ubable to find ringbuffer map");
+    INFO("got eBPF ringbuffer map");
+
+    /* create ringbuffer */
+    bpf_ringbuf = ring_buffer__new(bpf_map_fd, process_ebpf_sample, NULL, NULL);
+    GOTO(!bpf_ringbuf, clean_bpf_obj, "unable to create ringbuffer");
+    INFO("created eBPF ringbuffer");
+
+    /* open netfilter queue handle */
+    nf_handle = nfq_open();
+    GOTO(!nf_handle, clean_bpf_rb, "unable to open nfq handle (%d)", errno);
+    INFO("opened nfq handle");
+
+    /* bind nfq handle to queue                            *
+     * TODO: change second arg to value from config struct */
+    nfq_handle = nfq_create_queue(nf_handle, 0, nfq_handler, NULL);
+    GOTO(!nfq_handle, clean_nf_handle, "unable to bind to nfqueue (%d)", errno);
+    INFO("bound to netfilter queue: %d", 0);
+
+    /* set amount of data to be copied to userspace (max ip packet size) */
+    ans = nfq_set_mode(nfq_handle, NFQNL_COPY_PACKET, sizeof(pkt_buff));
+    GOTO(ans < 0, clean_nf_handle, "unable to set nfq mode (%d)", errno);
+    INFO("configured nfq packet handling parameters");
+
+    /* obtain fd of queue handle's associated socket */
+    nfqueue_fd = nfq_fd(nf_handle);
+    INFO("obtained file descriptor of associated nfq socket");
 
     /* create epoll instance */
     epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    DIE(epoll_fd == -1, "failed to create epoll instance (%d)", errno);
+    GOTO(epoll_fd == -1, clean_nf_queue, "failed to create epoll instance (%d)",
+        errno);
     INFO("epoll instance created");
 
     /* add netlink socket to epoll watchlist */
@@ -66,7 +164,8 @@ int main(int argc, char *argv[])
     epoll_ev.events  = EPOLLIN;
 
     ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, netlink_fd, &epoll_ev);
-    DIE(ans == -1, "failed to add netlink to epoll monitor (%d)", errno);
+    GOTO(ans == -1, clean_epoll_fd,
+        "failed to add netlink to epoll monitor (%d)", errno);
     INFO("netlink socket added to epoll monitor");
 
     /* add inotify instance to epoll watchlist */
@@ -74,13 +173,43 @@ int main(int argc, char *argv[])
     epoll_ev.events  = EPOLLIN;
 
     ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, inotify_fd, &epoll_ev);
-    DIE(ans == -1, "failed to add inotify to epoll monitor (%d)", errno);
+    GOTO(ans == -1, clean_epoll_fd,
+        "failed to add inotify to epoll monitor (%d)", errno);
     INFO("inotify instance added to epoll monitor");
+
+    /* add eBPF ringbuffer to epoll watchlist */
+    epoll_ev.data.fd = bpf_map_fd;
+    epoll_ev.events  = EPOLLIN;
+
+    ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, bpf_map_fd, &epoll_ev);
+    GOTO(ans == -1, clean_epoll_fd,
+        "failed to add eBPF ringbuffer to epoll monitor (%d)", errno);
+    INFO("eBPF ringbuffer added to epoll monitor");
+
+    /* add stdin to epoll watchlist (requests debug info) */
+    epoll_ev.data.fd = STDIN_FILENO;
+    epoll_ev.events  = EPOLLIN;
+
+    ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, STDIN_FILENO, &epoll_ev);
+    GOTO(ans == -1, clean_epoll_fd,
+        "failed to add stdin to epoll monitor");
+    INFO("stdin added to epoll monitor");
 
     /* subscribe to netlink proc events */
     ans = nl_proc_ev_subscribe(netlink_fd, true);
-    DIE(ans == -1, "failed to subscribe to netlink proc events");
+    GOTO(ans == -1, clean_epoll_fd,
+        "failed to subscribe to netlink proc events");
     INFO("now subscribed to netlink proc events");
+
+    /* attach all available eBPF programs to respective tracepoints */
+    bpf_object__for_each_program(bpf_prog, bpf_obj) {
+        struct bpf_link *bpf_link = bpf_program__attach(bpf_prog);
+        GOTO(!bpf_link, clean_netlink_sub, "unable to attach eBPF program: %s",
+            bpf_program__name(bpf_prog));
+
+        /* keep track of links for later unload */
+        bpf_links.push_back(bpf_link);
+    }
 
     /* main loop */
     INFO("main loop starting");
@@ -93,24 +222,70 @@ int main(int argc, char *argv[])
         /* handle event */
         if (epoll_ev.data.fd == netlink_fd) {
             ans = nl_proc_ev_handle(netlink_fd);
-            continue;
-        }
-        if (epoll_ev.data.fd == inotify_fd) {
+        } else if (epoll_ev.data.fd == inotify_fd) {
             /* TODO */
-            continue;
+        } else if (epoll_ev.data.fd == bpf_map_fd) {
+            ans = ring_buffer__consume(bpf_ringbuf);
+            ALERT(ans < 0, "failed to consume eBPF ringbuffer sample");
+        } else if (epoll_ev.data.fd == STDIN_FILENO) {
+            rb = read(STDIN_FILENO, usr_input, sizeof(usr_input));
+            CONT(rb == -1, "failed to read stdin input (%d)", errno);
+
+            /* print debug info on user request */
+            sc_dump_state();    
         }
     }
-    INFO("successfully exited main loop");
+    WAR("exited main loop");
 
-    /* close epoll instance */
-    close(epoll_fd);
+clean_bpf_links:
+    /* unlink existing programs */
+    for (auto& bpf_link : bpf_links) {
+        ans = bpf_link__destroy(bpf_link);
+        ALERT(ans, "failed to destroy eBPF link");
+        INFO("destroyed eBPF program link");
+    }
 
+clean_netlink_sub:
     /* unsubscribe from netlink proc events */
     ans = nl_proc_ev_subscribe(netlink_fd, false);
-    DIE(ans == -1, "failed to unsubscribe from netlink proc events");
+    ALERT(ans == -1, "failed to unsubscribe from netlink proc events");
+    INFO("unsubscribed from netlink proc events");
 
-    /* close netlink socket */
-    close(netlink_fd);
+clean_epoll_fd:
+    /* close epoll instance */
+    ans = close(epoll_fd);
+    ALERT(ans == -1, "failed to close epoll instance (%d)", errno);
+    INFO("closed epoll instance");
+
+clean_nf_queue:
+    nfq_destroy_queue(nfq_handle);
+    INFO("destroyed netfilter queue");
+
+clean_nf_handle:
+    ans = nfq_close(nf_handle);
+    ALERT(ans, "failed to close nfq handle");
+    INFO("closed nfq handle");
+
+clean_bpf_rb:
+    /* free eBPF ringbuffer */
+    ring_buffer__free(bpf_ringbuf);
+    INFO("freed eBPF ringbuffer");
+
+clean_bpf_obj:
+    bpf_object__close(bpf_obj);
+    INFO("closed eBPF object");
+
+clean_inotify_fd:
+    /* close inotify instance */
+    ans = close(inotify_fd);
+    ALERT(ans == -1, "failed to close inotify instance (%d)", errno);
+    INFO("closed inotify instance");
+
+clean_netlink_fd:
+    /* close netlink instance */
+    ans = close(netlink_fd);
+    ALERT(ans == -1, "failed to close netlink instance (%d)", errno);
+    INFO("closed netlink instance");
 
     return 0;
 }
