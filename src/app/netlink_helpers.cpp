@@ -155,8 +155,9 @@ int32_t nl_proc_ev_handle(int nl_fd)
  *  @return : 0 if everything went well
  *
  * If the address and port filters are not sufficient to uniquely identify a
- * socket, the function will terminate normally and return the inode of the
- * first resulting entry. However, a warning message will be issued.
+ * socket, the function will terminate with error, return the inode of the
+ * first resulting entry and print a warning. If the function fails for any
+ * other reason, the inode buffer will be zeroed out.
  */
 int32_t nl_sock_diag(int32_t  nl_fd,
                      uint8_t  protocol,
@@ -232,7 +233,7 @@ int32_t nl_sock_diag(int32_t  nl_fd,
             /* check if filtering criteria were insufficient */
             if (*inode_p) {
                 WAR("insufficient filtering criteria");
-                return 0;
+                return -1;
             }
 
             /* set inode value */
