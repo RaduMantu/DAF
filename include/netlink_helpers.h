@@ -1,3 +1,7 @@
+#include <stdint.h>         /* [u]int*_t              */
+#include <sys/socket.h>     /* AF_NETLINK, SOCK_DGRAM */
+#include <linux/netlink.h>  /* NETLINK_INET_DIAG      */ 
+
 #ifndef _NETLINK_HELPERS_H
 #define _NETLINK_HELPERS_H
 
@@ -14,9 +18,12 @@ enum proc_events {
     PROC_EVENT_EXIT     = 0x80000000,
 };
 
-
-int nl_connect(void);
-int nl_proc_ev_subscribe(int nl_fd, bool enable);
-int nl_proc_ev_handle(int nl_fd);
+int32_t nl_socket(int socket_type, int netlink_family);
+int32_t nl_proc_ev_connect(void);
+int32_t nl_proc_ev_subscribe(int nl_fd, bool enable);
+int32_t nl_proc_ev_handle(int nl_fd);
+int32_t nl_sock_diag(int32_t nl_fd, uint8_t protocol, uint32_t src_addr,
+            uint32_t dst_addr, uint16_t src_port, uint16_t dst_port,
+            uint32_t *inode_p);
 
 #endif

@@ -1,25 +1,42 @@
 #include <unistd.h>             /* read, write, close, getpid, readlink */
-#include <string.h>             /* memset */
-#include <sys/socket.h>         /* socket */
-#include <linux/netlink.h>      /* NETLINK_CONNECTOR */
-#include <linux/connector.h>    /* CN_IDX_PROC */
-#include <linux/cn_proc.h>      /* proc_cn_mcast_op, PROC_EVENT_* */
+#include <string.h>             /* memset                               */
+#include <sys/socket.h>         /* socket                               */
+#include <linux/netlink.h>      /* NETLINK_CONNECTOR                    */
+#include <linux/sock_diag.h>    /* SOCK_DIAG_BY_FAMILY                  */
+#include <linux/inet_diag.h>    /* inet_diag_req_v2                     */
+#include <linux/connector.h>    /* CN_IDX_PROC                          */
+#include <linux/cn_proc.h>      /* proc_cn_mcast_op, PROC_EVENT_*       */
 
 #include "sock_cache.h"
 #include "netlink_helpers.h"
 #include "util.h"
 
-/* nl_connect - connects to netlink
+/* nl_socket - opens a netlink socket but does not bind it
+ *  @socket_type    : SOCK_RAW or SOCK_DGRAM; they are equivalent
+ *  @netlink_family : kernel module to interact with; choice between:
+ *                      NETLINK_CONNECTOR -- kernel proc event subscription
+ *                      NETLINK_INET_DIAG -- inet socket info querying
+ *                    man(7) netlink for more options
+ *
  *  @return : socket fd or -1 on error
  */
-int nl_connect(void)
+int32_t nl_socket(int socket_type, int netlink_family)
+{
+    return socket(AF_NETLINK, socket_type, netlink_family);
+}
+
+/* nl_connect - connects to netlink for proc event monitoring
+ *
+ *  @return : socket fd or -1 on error
+ */
+int32_t nl_proc_ev_connect(void)
 {
     int nl_fd;                  /* netlink socket */
     int ans;                    /* answer         */
     struct sockaddr_nl nl_sa;   /* socket address */
    
     /* open netlink socket for kernel connector */ 
-    nl_fd = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_CONNECTOR);
+    nl_fd = nl_socket(SOCK_DGRAM, NETLINK_CONNECTOR);
     RET(nl_fd == -1, -1, "netlink socket open failed");
    
     /* bind socket */
@@ -45,7 +62,7 @@ cleanup:
  *
  *  @return : 0 if everything went well
  */
-int nl_proc_ev_subscribe(int nl_fd, bool enable)
+int32_t nl_proc_ev_subscribe(int nl_fd, bool enable)
 {
     struct __attribute__((aligned(NLMSG_ALIGNTO))) {
         struct nlmsghdr nl_hdr;                 /* netlink header  */
@@ -53,25 +70,25 @@ int nl_proc_ev_subscribe(int nl_fd, bool enable)
             struct cn_msg         cn_msg;
             enum proc_cn_mcast_op cn_mcast;
         };
-    } nlcn_msg;     /* netlink datagram */
+    } msg;       /* netlink datagram */
     int ans;        /* answer           */
 
     /* configure header and payload values */
-    memset(&nlcn_msg, 0, sizeof(nlcn_msg));
+    memset(&msg, 0, sizeof(msg));
 
-    nlcn_msg.nl_hdr.nlmsg_len  = sizeof(nlcn_msg);  /* total length        */
-    nlcn_msg.nl_hdr.nlmsg_pid  = getpid();          /* subscribing process */
-    nlcn_msg.nl_hdr.nlmsg_type = NLMSG_DONE;        /* no fragmentation    */
+    msg.nl_hdr.nlmsg_len  = sizeof(msg);    /* total length        */
+    msg.nl_hdr.nlmsg_pid  = getpid();       /* subscribing process */
+    msg.nl_hdr.nlmsg_type = NLMSG_DONE;     /* no fragmentation    */
 
     /* read more in Documentation/connector/connector.txt */
-    nlcn_msg.cn_msg.len = sizeof(enum proc_cn_mcast_op);    /* data length */
-    nlcn_msg.cn_msg.id.idx = CN_IDX_PROC;           /* unique connector ID */
-    nlcn_msg.cn_msg.id.val = CN_VAL_PROC;           /* unique connector ID */
+    msg.cn_msg.len = sizeof(enum proc_cn_mcast_op);  /* data length         */
+    msg.cn_msg.id.idx = CN_IDX_PROC;                 /* unique connector ID */
+    msg.cn_msg.id.val = CN_VAL_PROC;                 /* unique connector ID */
 
-    nlcn_msg.cn_mcast = enable ? PROC_CN_MCAST_LISTEN : PROC_CN_MCAST_IGNORE;
+    msg.cn_mcast = enable ? PROC_CN_MCAST_LISTEN : PROC_CN_MCAST_IGNORE;
 
     /* send subscription request via socket */
-    ans = write(nl_fd, &nlcn_msg, sizeof(nlcn_msg));
+    ans = write(nl_fd, &msg, sizeof(msg));
     RET(ans == -1, -1, "unable to send netlink subscription request");
 
     return 0;
@@ -82,7 +99,7 @@ int nl_proc_ev_subscribe(int nl_fd, bool enable)
  *
  *  @return : 0 if everything went well
  */
-int nl_proc_ev_handle(int nl_fd)
+int32_t nl_proc_ev_handle(int nl_fd)
 {
     struct __attribute__ ((aligned(NLMSG_ALIGNTO))) {
         struct nlmsghdr nl_hdr;             /* netlink header  */
@@ -123,6 +140,113 @@ int nl_proc_ev_handle(int nl_fd)
             break;
     }
 
+    return 0;
+}
+
+/* nl_sock_diag - returns the inode of a specific named socket
+ *  @nl_fd    : NETLINK_INET_DIAG socket
+ *  @protocol : IPPROTO_{TCP,UDP}
+ *  @src_addr : network order source ip address      (0 if ignored)
+ *  @dst_addr : network order destination ip address (0 if ignored)
+ *  @src_port : network order source port            (0 if ignored)
+ *  @dst_port : network order destination port       (0 if ignored)
+ *  @inode_p  : pointer to buffer where inode will be stored
+ *
+ *  @return : 0 if everything went well
+ *
+ * If the address and port filters are not sufficient to uniquely identify a
+ * socket, the function will terminate normally and return the inode of the
+ * first resulting entry. However, a warning message will be issued.
+ */
+int32_t nl_sock_diag(int32_t  nl_fd,
+                     uint8_t  protocol,
+                     uint32_t src_addr,
+                     uint32_t dst_addr,
+                     uint16_t src_port,
+                     uint16_t dst_port,
+                     uint32_t *inode_p)
+{
+    struct msghdr           msg;            /* message chunk integrator   */
+    struct nlmsghdr         nlh;            /* netlink header             */
+    struct nlmsghdr         *nlh_it;        /* netlink header iterator    */
+    struct inet_diag_req_v2 conn_req;       /* netlink diagnostic request */
+    struct sockaddr_nl      sa;             /* socket address             */
+    struct iovec            iov[2];         /* buffer aggregators         */
+    struct inet_diag_msg    *diag_msg;      /* netlink diagnositc reponse */
+    uint8_t                 recv_buf[4096]; /* netlink response buffer    */
+    ssize_t                 ans;            /* answer                     */
+
+    /* initial zeroing of structures */
+    memset(&msg,      0, sizeof(msg));
+    memset(&sa,       0, sizeof(sa));
+    memset(&nlh,      0, sizeof(nlh));
+    memset(&conn_req, 0, sizeof(conn_req));
+    memset(inode_p,   0, sizeof(*inode_p));
+
+    /* configure request parameters */
+    sa.nl_family = AF_NETLINK;                        /* socket protocol     */
+    
+    conn_req.sdiag_family   = AF_INET;                /* target addr family  */
+    conn_req.sdiag_protocol = protocol;               /* target protocol     */
+    conn_req.idiag_states   = ~0;                     /* include all states  */
+
+    nlh.nlmsg_len   = NLMSG_LENGTH(sizeof(conn_req)); /* message length      */
+    nlh.nlmsg_type  = SOCK_DIAG_BY_FAMILY;            /* message type        */
+    nlh.nlmsg_flags = NLM_F_DUMP | NLM_F_REQUEST;     /* request diag list   */
+
+    conn_req.id.idiag_src[0] = src_addr;              /* src ip addr filter  */
+    conn_req.id.idiag_dst[0] = dst_addr;              /* dst ip addr filter  */
+    conn_req.id.idiag_sport  = src_port;              /* src port filter     */
+    conn_req.id.idiag_dport  = dst_port;              /* dst port filter     */
+
+    iov[0].iov_base = (void *) &nlh;                  /* include nl header   */
+    iov[0].iov_len  = sizeof(nlh);                    /* nl header size      */
+    iov[1].iov_base = (void *) &conn_req;             /* include payload     */
+    iov[1].iov_len  = sizeof(conn_req);               /* payload size        */
+
+    msg.msg_name    = (void*) &sa;                    /* sock address        */
+    msg.msg_namelen = sizeof(sa);                     /* length of sock addr */
+    msg.msg_iov     = iov;                            /* message segments    */
+    msg.msg_iovlen  = 2;                              /* number of segments  */
+   
+    /* send socket diagnostic request */
+    ans = sendmsg(nl_fd, &msg, 0);
+    RET(ans == -1, -1, "unable to send netlink socket diagnostics request");
+
+    /* wait for response (can come in multiple instances) */
+    while (1) {
+        ans = recv(nl_fd, recv_buf, sizeof(recv_buf), 0);
+        RET(ans == -1, -1, "unable to receive diagnostic data");
+
+        /* for all parts of the full message */
+        nlh_it = (struct nlmsghdr*) recv_buf;
+        while(NLMSG_OK(nlh_it, ans)){
+            /* check for error or response end */
+            RET(nlh_it->nlmsg_type == NLMSG_ERROR, -1, "NLMSG_ERROR");
+            if (nlh_it->nlmsg_type == NLMSG_DONE)
+                return *inode_p != 0;
+
+            /* extract payload from current message */
+            diag_msg = (struct inet_diag_msg*) NLMSG_DATA(nlh_it);
+
+            /* check if filtering criteria were insufficient */
+            if (*inode_p) {
+                WAR("insufficient filtering criteria");
+                return 0;
+            }
+
+            /* set inode value */
+            *inode_p = diag_msg->idiag_inode;
+
+            /* skip to next message in response                               *
+             * NOTE: we don't just return 0 here because we want to check for *
+             *       more responses; would indicate that filtering criteria   *
+             *       were insufficient                                        */
+            nlh_it = NLMSG_NEXT(nlh_it, ans); 
+        }
+    }
+
+    /* unreachable */
     return 0;
 }
 

@@ -49,6 +49,10 @@ int nfq_handler(struct nfq_q_handle *qh,
 {
     struct nfqnl_msg_packet_hdr *ph;    /* nfq meta header */
 
+    /* get nfq packet header (w/ metadata) */
+    ph = nfq_get_msg_packet_hdr(nfd);
+    RET(!ph, -1, "Unable to retrieve packet meta hdr (%d)", errno);
+
     DEBUG("packet received");
 
     /* pass unchanged */
@@ -96,13 +100,13 @@ int main(int argc, char *argv[])
     DIE(ans == -1, "unable to set resource limit (%d)", errno);
     INFO("set new resource limits");
 
-    /* initialize socket cache (just compiles a regex) */
+    /* initialize socket cache internal structures */
     ans = sc_init();
     DIE(ans, "unable to initialize socket cache module");
     INFO("initialized socket cache module");
 
     /* connect to netlink */
-    netlink_fd = nl_connect();
+    netlink_fd = nl_proc_ev_connect();
     DIE(netlink_fd == -1, "failed to establish netlink connection");
     INFO("netlink connection established");
 
@@ -186,6 +190,15 @@ int main(int argc, char *argv[])
         "failed to add eBPF ringbuffer to epoll monitor (%d)", errno);
     INFO("eBPF ringbuffer added to epoll monitor");
 
+    /* add netfilter queue to epoll watchlist */
+    epoll_ev.data.fd = nfqueue_fd;
+    epoll_ev.events  = EPOLLIN;
+
+    ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, nfqueue_fd, &epoll_ev);
+    GOTO(ans == -1, clean_epoll_fd,
+        "failed to add netfilter queue to epoll monitor (%d)", errno);
+    INFO("netfilter queue added to epoll monitor");
+
     /* add stdin to epoll watchlist (requests debug info) */
     epoll_ev.data.fd = STDIN_FILENO;
     epoll_ev.events  = EPOLLIN;
@@ -227,6 +240,11 @@ int main(int argc, char *argv[])
         } else if (epoll_ev.data.fd == bpf_map_fd) {
             ans = ring_buffer__consume(bpf_ringbuf);
             ALERT(ans < 0, "failed to consume eBPF ringbuffer sample");
+        } else if (epoll_ev.data.fd == nfqueue_fd) {
+            rb = read(nfqueue_fd, pkt_buff, sizeof(pkt_buff));
+            CONT(rb == -1, "failed to read packet from nf queue (%d)", errno);
+
+            nfq_handle_packet(nf_handle, (char *) pkt_buff, rb); 
         } else if (epoll_ev.data.fd == STDIN_FILENO) {
             rb = read(STDIN_FILENO, usr_input, sizeof(usr_input));
             CONT(rb == -1, "failed to read stdin input (%d)", errno);

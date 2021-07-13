@@ -9,6 +9,7 @@
 #include <functional>       /* hash                */
 
 #include "sock_cache.h"
+#include "netlink_helpers.h"
 #include "util.h"
 
 using namespace std;
@@ -44,8 +45,13 @@ static unordered_map<uint32_t, uint16_t>                           sock_to_port;
 static unordered_map<uint16_t, uint32_t>                           port_to_sock;
 static unordered_set<uint32_t>                                     tracked_pids;
 
-/* compiled regex to match "socket:[<inode>]" */
-static regex_t regex;
+/* runtine resources that need initialization -- see sc_init() */
+static regex_t regex;       /* compiled regex to match "socket:[<inode>]" */
+int32_t        nsd_fd;      /* netlink socket diagnostics file descriptor */
+
+/* runtime statistics counters */
+uint64_t symlink_miss = 0;      /* fd was closed too fast */
+uint64_t dir_miss     = 0;      /* process ended too fast */
 
 /******************************************************************************
  ********************************* PUBLIC API *********************************
@@ -80,7 +86,10 @@ static int32_t _fd_to_inode(char *procfs_path, uint32_t *inode_p)
      * NOTE: not unusual for socket to close or the process to exit before we *
      *       get a chance to properly identify it                             */
     wb_link = readlink(procfs_path, symlink_val, sizeof(symlink_val) - 1);
-    RET(wb_link == -1, -1, "unable to resolve symlink %s", procfs_path);
+    if (wb_link == -1) {
+        symlink_miss++;
+        return -1;
+    }
     symlink_val[wb_link] = '\0';
 
     /* check if fd is indeed a socket */
@@ -161,9 +170,16 @@ static int32_t _scan_proc_sockets(uint32_t pid)
     RET(wb_path >= sizeof(procfs_path), -1,
         "path truncated; increase buffer size");
 
-    /* parse entries in directory */
+    /* parse entries in directory                                   *
+     * NOTE: possible but not usual for process to terminate early  *
+     *       might warrant further investigation if it ever happens */
     d = opendir(procfs_path);
-    RET(!d, -1, "could not open %s", procfs_path);
+    if (!d) {
+        dir_miss++;
+
+        WAR("could not open %s", procfs_path);
+        return -1;   
+    }
    
     errno = 0; 
     while (de = readdir(d)) {
@@ -185,7 +201,11 @@ static int32_t _scan_proc_sockets(uint32_t pid)
         /* reset errno in case next readdir fails with error */
         errno = 0;
     }
-    RET(errno, -1, "readdir failed (%d)", errno);
+
+    /* error reading entry in fd/ is most likely due to early close() */
+    if (errno == 2) {
+        symlink_miss++;
+    }
   
     /* cleanup */
     closedir(d);
@@ -203,8 +223,15 @@ static int32_t _scan_proc_sockets(uint32_t pid)
  */
 int32_t sc_init(void)
 {
-    int32_t ans = regcomp(&regex, "socket:\\[[[:digit:]]*\\]", REG_NOSUB);
+    int32_t ans;
+
+    /* compile regex for fd symlink value match to socket string */
+    ans = regcomp(&regex, "socket:\\[[[:digit:]]*\\]", REG_NOSUB);
     RET(ans, ans, "unable to compile regex (%d)", ans);
+
+    /* open netlink socket diagnostics socket  */
+    nsd_fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_INET_DIAG);
+    RET(nsd_fd == -1, -1, "unable to open netlink socket diagnostics socket");
 
     return 0;
 }
@@ -384,6 +411,11 @@ void sc_dump_state(void)
                 inode, sock_to_pids[inode].size());
         }
     }
+
+    /* print additional statistics */
+    printf("\n\n");
+    printf(BLUE_B "early fd close:     " UNSET_B "%10lu\n" CLR, symlink_miss);
+    printf(BLUE_B "early process exit: " UNSET_B "%10lu\n" CLR, dir_miss);
 
     printf("========================[ cut here ]========================\n");
 }
