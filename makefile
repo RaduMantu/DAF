@@ -9,7 +9,7 @@ INC = include
 # compilation related parameters
 CXX      = g++
 CXXFLAGS = -std=c++20
-LDFLAGS  = -lnetfilter_queue -lbpf
+LDFLAGS  = -lnetfilter_queue -lbpf -lprocps
 
 CLANG      = clang
 LLC        = llc

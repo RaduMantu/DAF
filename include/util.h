@@ -6,8 +6,13 @@
 #define _UTIL_H
 
 /* compiler hints for branch prediciton */
+#ifndef likely
 #define likely(x)       __builtin_expect((x),1)
+#endif
+
+#ifndef unlikely
 #define unlikely(x)     __builtin_expect((x),0)
+#endif
 
 
 /* set to 0 in order to suppress DEBUG output */

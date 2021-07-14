@@ -1,8 +1,10 @@
 #include <stdio.h>          /* ssize_t             */
 #include <stdlib.h>         /* atoi                */
+#include <string.h>         /* memset              */
 #include <dirent.h>         /* opendir             */
 #include <unistd.h>         /* readlink            */
 #include <regex.h>          /* reg{comp,exec,free} */
+#include <proc/readproc.h>  /* openproc, readproc  */
 #include <unordered_map>    /* unordered_map       */
 #include <unordered_set>    /* unordered_set       */
 #include <utility>          /* pair                */
@@ -30,11 +32,11 @@ struct pair_hash {
 };
 
 /* internal data structures                                             *
- *  pid_to_socks : set of sockets to which pid has access               *
- *  sock_to_pids : set of pids that have access to socket               *
+ *  pid_to_socks : set of socket inodes to which pid has access         *
+ *  sock_to_pids : set of pids that have access to socket inodes        *
  *  fd_to_sock   : translation from <pid,fd> to socket inode            *
- *  inode_fd_ref : number of fd references a pid has to an inode        *
- *  sock_to_port : port associated to socket (if any)                   *
+ *  inode_fd_ref : number of fd references a pid has to a socket inode  *
+ *  sock_to_port : port associated to socket inode (if any)             *
  *  port_to_sock : socket associated to port (depends on type)          *
  *  tracked_pids : processes whose sockets were tracked since inception */
 static unordered_map<uint32_t, unordered_set<uint32_t>>            pid_to_socks;
@@ -213,10 +215,39 @@ static int32_t _scan_proc_sockets(uint32_t pid)
     return 0;
 }
 
+/* _scan_all_procs - identify associated sockets for all processes
+ *  @return : 0 if everything went well
+ *
+ * this is a costly operation and should only be called once, when a packet is
+ * received via netfitler queue from a socket that was opened before we started
+ * the firewall; chances are _very_ high that this will happen immeidately on a
+ * normal machine (that has an open browser, for example)
+ */
+static int32_t _scan_all_procs(void)
+{
+    PROCTAB *proc;
+    proc_t proc_info;
+
+    /* clean proc info structure */
+    memset(&proc_info, 0, sizeof(proc_info));
+
+    /* get PROCTAB instance w/o extra info */
+    proc = openproc(0);
+    RET(!proc, -1, "");
+
+    /* for all running processes */
+    while (readproc(proc, &proc_info))
+        _scan_proc_sockets(proc_info.tgid);
+
+    /* clean up */
+    closeproc(proc);
+
+    return 0;
+}
+
 /******************************************************************************
  ************************** PUBLIC API IMPLEMENTATION *************************
  ******************************************************************************/
-
 
 /* sc_init - initializes socket cache internal structures
  *  @return : 0 if everything went well
@@ -283,9 +314,19 @@ void sc_close_fd(uint32_t pid, uint8_t fd)
         auto ans = pid_set->second.erase(pid);
         ALERT(!ans, "pid %u not associated with inode %u", pid, inode);
 
-        /* clean up empty set */
-        if (!pid_set->second.size())
+        /* clean up empty set                                       *
+         * NOTE: empty pid set means that the socket is effectively *
+         *       inaccessible now and any claim to a port is void   */
+        if (!pid_set->second.size()) {
             sock_to_pids.erase(pid_set);
+
+            /* clean up port association (if any) */
+            auto port_it = sock_to_port.find(inode);
+            if (port_it != sock_to_port.end()) {
+                port_to_sock.erase(port_it->second);
+                sock_to_port.erase(port_it);
+            }        
+        }
     } else
         WAR("no pid set exists for inode %u", inode);
 
@@ -314,9 +355,19 @@ void sc_proc_exit(uint32_t pid)
             if (pid_set != sock_to_pids.end()) {
                 pid_set->second.erase(pid);
 
-                /* clean up empty set */
-                if (!pid_set->second.size())
+                /* clean up empty set                                       *
+                 * NOTE: empty pid set means that the socket is effectively *
+                 *       inaccessible now and any claim to a port is void   */
+                if (!pid_set->second.size()) {
                     sock_to_pids.erase(pid_set);
+
+                    /* clean up port association (if any) */
+                    auto port_it = sock_to_port.find(inode);
+                    if (port_it != sock_to_port.end()) {
+                        port_to_sock.erase(port_it->second);
+                        sock_to_port.erase(port_it);
+                    }        
+                }
             } else
                 WAR("no pid set exists for inode %u", inode);
         }
@@ -419,4 +470,67 @@ void sc_dump_state(void)
 
     printf("========================[ cut here ]========================\n");
 }
+
+/* sc_get_pid - performs port -> socket_inode -> pid translation
+ *  @protocol : protocol employed by the socket
+ *  @src_ip   : network order source ip        (can be 0)
+ *  @dst_ip   : network order destination ip   (can be 0)
+ *  @src_port : network order source port      (must NOT be 0)
+ *  @dst_port : network order destination port (can be 0)
+ *
+ *  @return : pointer to set of pids that have access to given port
+ *
+ * arguments that can be 0 are used to filter entries in netlink socket
+ * diagnostics request. only src_port will be used when mapping the inode in
+ * the internal structures
+ */
+unordered_set<uint32_t> *sc_get_pid(uint8_t  protocol,
+                                    uint32_t src_ip,
+                                    uint32_t dst_ip,
+                                    uint16_t src_port,
+                                    uint16_t dst_port)
+{
+    int32_t  ans;
+    uint32_t inode;
+
+    /* sanity check; a src_port 0 will not break nl_sock_diag but will waste *
+     * time with netlink socket diagnostics query that we can't use anyway   */
+    RET(!src_port, NULL, "zero-valued src port was provided");
+    
+    /* fast path: look up port:inode association in cache */
+    auto inode_it = port_to_sock.find(src_port);
+    if (inode_it != port_to_sock.end()) {
+        inode = inode_it->second;
+    }
+   /* slow path: find socket via netlink diagnostics */ 
+    else {
+        /* look up inode of socket with given filtering criteria */
+        ans = nl_sock_diag(nsd_fd, protocol, src_ip, dst_ip, src_port,
+                dst_port, &inode);
+        RET(ans, NULL, "unable to find exact socket match (inode: %u)", inode);
+
+        /* update internal structures */
+        port_to_sock[src_port] = inode;
+        sock_to_port[inode]    = src_port;
+    }
+
+    /* fast path: using inode, find the cached set of associated pids */
+    auto pids_it = sock_to_pids.find(inode);
+    if (pids_it != sock_to_pids.end()) {
+        return &pids_it->second;
+    }
+    /* slow path: analyze the open file descriptors of all processes */
+    else {
+        _scan_all_procs();
+
+        /* try finding the set of associated pids once again *
+         * if this fails, we have a problem                  */
+        pids_it = sock_to_pids.find(inode);
+        RET(pids_it == sock_to_pids.end(), NULL,
+            "could not find socket match in any process (inode: %u)", inode);
+    }
+
+    return NULL;
+}
+
 

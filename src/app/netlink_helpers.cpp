@@ -225,7 +225,7 @@ int32_t nl_sock_diag(int32_t  nl_fd,
             /* check for error or response end */
             RET(nlh_it->nlmsg_type == NLMSG_ERROR, -1, "NLMSG_ERROR");
             if (nlh_it->nlmsg_type == NLMSG_DONE)
-                return *inode_p != 0;
+                return *inode_p == 0;
 
             /* extract payload from current message */
             diag_msg = (struct inet_diag_msg*) NLMSG_DATA(nlh_it);
