@@ -14,9 +14,9 @@
 #include <sys/resource.h>       /* setrlimit */
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
-
 #include <vector>               /* vector */
 
+#include "cli_args.h"
 #include "netlink_helpers.h"
 #include "nfq_helpers.h"
 #include "ebpf_helpers.h"
@@ -143,6 +143,10 @@ int main(int argc, char *argv[])
     char                      usr_input[256];   /* user stdin input buffer    */
     ssize_t                   rb;               /* bytes read                 */
 
+    /* parse command line arguments */
+    argp_parse(&argp, argc, argv, 0, 0, &cfg);
+    INFO("parsed cli arguments");
+
     /* set gracious behaviour for Ctrl^C signal                            *
      * because SA_RESTART is not set, interrupted syscalls fail with EINTR */
     memset(&act, 0, sizeof(act));
@@ -173,7 +177,7 @@ int main(int argc, char *argv[])
     INFO("inotify instance created");
 
     /* open eBPF object file */
-    bpf_obj = bpf_object__open_file(argv[1], NULL);
+    bpf_obj = bpf_object__open_file(cfg.ebpf_path, NULL);
     GOTO(libbpf_get_error(bpf_obj), clean_inotify_fd,
         "unable to open eBPF object");
     INFO("opened eBPF object file");
@@ -198,9 +202,8 @@ int main(int argc, char *argv[])
     GOTO(!nf_handle, clean_bpf_rb, "unable to open nfq handle (%d)", errno);
     INFO("opened nfq handle");
 
-    /* bind nfq handle to queue                            *
-     * TODO: change second arg to value from config struct */
-    nfq_handle = nfq_create_queue(nf_handle, 0, nfq_handler, NULL);
+    /* bind nfq handle to queue */
+    nfq_handle = nfq_create_queue(nf_handle, cfg.queue_num, nfq_handler, NULL);
     GOTO(!nfq_handle, clean_nf_handle, "unable to bind to nfqueue (%d)", errno);
     INFO("bound to netfilter queue: %d", 0);
 
