@@ -8,8 +8,8 @@
 static struct argp_option options[] = {
     { "ebpf-obj",  'e', "OBJ", 0,
       "eBPF object with select syscall hooks" },
-    { "poll-maps", 'p', NULL,  OPTION_ARG_OPTIONAL,
-      "Continuously poll /proc/<pid>/maps (default: no)" },
+    { "retain-maps", 'r', NULL,  OPTION_ARG_OPTIONAL,
+      "retain objects in set even after unmapping them (default: no)" },
     { "queue",     'q', "NUM", 0,
       "netfilter queue number (default: 0)" },
     { 0 }
@@ -28,8 +28,8 @@ static char doc[] = "app-fw -- network traffic filter based on originating"
 /* declaration of relevant structures */
 struct argp   argp = { options, parse_opt, args_doc, doc };
 struct config cfg  = {
-    .queue_num = 0,
-    .poll_maps = 0,
+    .queue_num   = 0,
+    .retain_maps = 0,
 };
 
 /* parse_opt - parses one argument and updates relevant structures
@@ -50,9 +50,9 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         case 'q':
             sscanf(arg, "%hu", &cfg.queue_num);
             break;
-        /* enable /proc/<pid>/maps polling */
-        case 'p':
-            cfg.poll_maps = 1;
+        /* retain objects in set after unmapping them */
+        case 'r':
+            cfg.retain_maps = 1;
             break;
         /* unknown argument */
         default:

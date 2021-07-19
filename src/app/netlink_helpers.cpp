@@ -8,6 +8,7 @@
 #include <linux/cn_proc.h>      /* proc_cn_mcast_op, PROC_EVENT_*       */
 
 #include "sock_cache.h"
+#include "hash_cache.h"
 #include "netlink_helpers.h"
 #include "util.h"
 
@@ -131,8 +132,9 @@ int32_t nl_proc_ev_handle(int nl_fd)
 
             break;
         case PROC_EVENT_EXIT:
-            /* update socket cache state */
+            /* update socket & hash cache state */
             sc_proc_exit(nlcn_msg.proc_ev.event_data.exit.process_pid);
+            hc_proc_exit(nlcn_msg.proc_ev.event_data.exit.process_pid);
 
             break;
         /* don't care */

@@ -21,6 +21,7 @@
 #include "nfq_helpers.h"
 #include "ebpf_helpers.h"
 #include "sock_cache.h"
+#include "hash_cache.h"
 #include "util.h"
 
 using namespace std;
@@ -105,10 +106,20 @@ int nfq_handler(struct nfq_q_handle *qh,
           (iph->daddr >>  0) & 0xff, (iph->daddr >>  8) & 0xff,
           (iph->daddr >> 16) & 0xff, (iph->daddr >> 24) & 0xff,
           ntohs(src_port), ntohs(dst_port));
-    printf(">>> pids: ");
-    for (auto pid_it : *pid_set_p)
-        printf("%u ", pid_it);
-    printf("\n");
+
+    for (auto pid_it : *pid_set_p) {
+        printf(">>> pid: %u\n", pid_it);
+        
+        auto maps = hc_get_maps(pid_it);
+        for (auto& map_it : maps) {
+            uint8_t *md = hc_get_sha256((char *) map_it.c_str());
+
+            printf(" >> %45s -- ", map_it.c_str());
+            for (size_t i=0; i<32; ++i)
+                printf("%02hhx", md[i]);
+            printf("\n");
+        }
+    }
 
     /* pass unchanged */
 pass_unchanged:

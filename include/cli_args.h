@@ -6,9 +6,9 @@
 
 /* structure holding cli arguments information */
 struct config {
-    char     ebpf_path[64]; /* path to ebpf object              */
-    uint16_t queue_num;     /* netfilter queue number           */
-    uint8_t  poll_maps : 1; /* do not cache objects for process */
+    char     ebpf_path[64];   /* path to ebpf object                    */
+    uint16_t queue_num;       /* netfilter queue number                 */
+    uint8_t  retain_maps : 1; /* keep track of unmapped objects as well */
 };
 
 
