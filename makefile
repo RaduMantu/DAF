@@ -38,7 +38,7 @@ $(BIN)/app-fw: $(OBJECTS_APP)
 	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # app object generation rule
-$(OBJ)/%.o: $(SRC)/app/%.cpp
+$(OBJ)/%.o: $(SRC)/app/%.cpp | $(INC)/%.h $(INC)/util.h
 	$(CXX) -c -I $(INC) $(CXXFLAGS) -o $@ $<
 
 # eBPF object generation rule
