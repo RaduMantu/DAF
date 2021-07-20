@@ -1,6 +1,7 @@
-#include <stdio.h>      /* fprintf */
-#include <stdlib.h>     /* exit    */
-#include <errno.h>      /* errno   */
+#include <stdio.h>      /* fprintf  */
+#include <stdlib.h>     /* exit     */
+#include <errno.h>      /* errno    */
+#include <string.h>     /* strerror */
 
 #ifndef _UTIL_H
 #define _UTIL_H

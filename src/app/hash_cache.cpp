@@ -56,23 +56,23 @@ uint8_t *_compute_sha256(char *path)
 
     /* open target file */
     fd = open(path, O_RDONLY);
-    RET(fd == -1, NULL, "unable to open file %s (%d)", path, errno);
+    RET(fd == -1, NULL, "unable to open file %s (%s)", path, strerror(errno));
 
     /* get file stats (interested only in its size) */
     ans = fstat(fd, &fs);
-    GOTO(ans == -1, _compute_sha256_clean_fd, "unable to stat file %s (%d)",
-        path, errno);
+    GOTO(ans == -1, _compute_sha256_clean_fd, "unable to stat file %s (%s)",
+        path, strerror(errno));
 
     /* map file in virtual memory */
     pa = (uint8_t *) mmap(NULL, fs.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
     GOTO(pa == MAP_FAILED, _compute_sha256_clean_fd,
-        "unable to mmap file %s (%d)", path, errno);
+        "unable to mmap file %s (%s)", path, strerror(errno));
 
     /* allocate space on heap for hash                                   *
      * NOTE: must be manually freed when cache entry is removed (never?) */
     md = (uint8_t *) malloc(SHA256_DIGEST_LENGTH);
-    GOTO(!md, _compute_sha256_clean_mmap, "unable to allocate space (%d)",
-        errno);
+    GOTO(!md, _compute_sha256_clean_mmap, "unable to allocate space (%s)",
+        strerror(errno));
 
     /* calculate sha256 of given file */
     ans = SHA256_Init(&ctx);
@@ -92,11 +92,11 @@ uint8_t *_compute_sha256(char *path)
 
 _compute_sha256_clean_mmap:
     ans = munmap(pa, fs.st_size);
-    ALERT(ans == -1, "problem unmapping file %s (%d)", path, errno);
+    ALERT(ans == -1, "problem unmapping file %s (%s)", path, strerror(errno));
 
 _compute_sha256_clean_fd:
     ans = close(fd);
-    ALERT(ans == -1, "problem closing file %s (%d)", path, errno); 
+    ALERT(ans == -1, "problem closing file %s (%s)", path, strerror(errno)); 
 
     return retval;
 }

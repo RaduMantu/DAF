@@ -2,7 +2,6 @@
 #include <stdint.h>             /* [u]int*_t */
 #include <signal.h>             /* signal, siginterrupt */
 #include <unistd.h>             /* read, write, close */
-#include <errno.h>              /* errno */
 #include <arpa/inet.h>
 #include <netinet/in.h>         /* IPPROTO_* */
 #include <netinet/ip.h>         /* iphdr */
@@ -63,11 +62,11 @@ int nfq_handler(struct nfq_q_handle *qh,
 
     /* get nfq packet header (w/ metadata) */
     ph = nfq_get_msg_packet_hdr(nfd);
-    RET(!ph, -1, "Unable to retrieve packet meta hdr (%d)", errno);
+    RET(!ph, -1, "Unable to retrieve packet meta hdr (%s)", strerror(errno));
 
     /* extract raw packet */
     ans = nfq_get_payload(nfd, (uint8_t **) &iph);
-    RET(ans == -1, -1, "Unable to retrieve packet data (%d)", errno);
+    RET(ans == -1, -1, "Unable to retrieve packet data (%s)", strerror(errno));
     RET(ans != ntohs(iph->tot_len), -1, "Payload size & total len mismatch");
 
     /* extract port based on layer 4 protocol */
@@ -163,12 +162,12 @@ int main(int argc, char *argv[])
     memset(&act, 0, sizeof(act));
     act.sa_handler = sigint_handler;
     ans = sigaction(SIGINT, &act, NULL);
-    DIE(ans == -1, "unable to set new SIGINT handler (%d)", errno);
+    DIE(ans == -1, "unable to set new SIGINT handler (%s)", strerror(errno));
 
     /* increase resource limit for eBPF ringbuffer */
     rlim = {RLIM_INFINITY, RLIM_INFINITY};
     ans = setrlimit(RLIMIT_MEMLOCK, &rlim);
-    DIE(ans == -1, "unable to set resource limit (%d)", errno);
+    DIE(ans == -1, "unable to set resource limit (%s)", strerror(errno));
     INFO("set new resource limits");
 
     /* initialize socket cache internal structures */
@@ -184,7 +183,7 @@ int main(int argc, char *argv[])
     /* create inotify instance */
     inotify_fd = inotify_init1(IN_CLOEXEC);
     GOTO(inotify_fd == -1, clean_netlink_fd,
-        "failed to create inotify instance (%d)", errno);
+        "failed to create inotify instance (%s)", strerror(errno));
     INFO("inotify instance created");
 
     /* open eBPF object file */
@@ -210,17 +209,20 @@ int main(int argc, char *argv[])
 
     /* open netfilter queue handle */
     nf_handle = nfq_open();
-    GOTO(!nf_handle, clean_bpf_rb, "unable to open nfq handle (%d)", errno);
+    GOTO(!nf_handle, clean_bpf_rb, "unable to open nfq handle (%s)",
+        strerror(errno));
     INFO("opened nfq handle");
 
     /* bind nfq handle to queue */
     nfq_handle = nfq_create_queue(nf_handle, cfg.queue_num, nfq_handler, NULL);
-    GOTO(!nfq_handle, clean_nf_handle, "unable to bind to nfqueue (%d)", errno);
+    GOTO(!nfq_handle, clean_nf_handle, "unable to bind to nfqueue (%s)",
+        strerror(errno));
     INFO("bound to netfilter queue: %d", 0);
 
     /* set amount of data to be copied to userspace (max ip packet size) */
     ans = nfq_set_mode(nfq_handle, NFQNL_COPY_PACKET, sizeof(pkt_buff));
-    GOTO(ans < 0, clean_nf_handle, "unable to set nfq mode (%d)", errno);
+    GOTO(ans < 0, clean_nf_handle, "unable to set nfq mode (%s)",
+        strerror(errno));
     INFO("configured nfq packet handling parameters");
 
     /* obtain fd of queue handle's associated socket */
@@ -229,8 +231,8 @@ int main(int argc, char *argv[])
 
     /* create epoll instance */
     epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    GOTO(epoll_fd == -1, clean_nf_queue, "failed to create epoll instance (%d)",
-        errno);
+    GOTO(epoll_fd == -1, clean_nf_queue, "failed to create epoll instance (%s)",
+        strerror(errno));
     INFO("epoll instance created");
 
     /* add netlink socket to epoll watchlist */
@@ -239,7 +241,7 @@ int main(int argc, char *argv[])
 
     ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, netlink_fd, &epoll_ev);
     GOTO(ans == -1, clean_epoll_fd,
-        "failed to add netlink to epoll monitor (%d)", errno);
+        "failed to add netlink to epoll monitor (%s)", strerror(errno));
     INFO("netlink socket added to epoll monitor");
 
     /* add inotify instance to epoll watchlist */
@@ -248,7 +250,7 @@ int main(int argc, char *argv[])
 
     ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, inotify_fd, &epoll_ev);
     GOTO(ans == -1, clean_epoll_fd,
-        "failed to add inotify to epoll monitor (%d)", errno);
+        "failed to add inotify to epoll monitor (%s)", strerror(errno));
     INFO("inotify instance added to epoll monitor");
 
     /* add eBPF ringbuffer to epoll watchlist */
@@ -257,7 +259,7 @@ int main(int argc, char *argv[])
 
     ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, bpf_map_fd, &epoll_ev);
     GOTO(ans == -1, clean_epoll_fd,
-        "failed to add eBPF ringbuffer to epoll monitor (%d)", errno);
+        "failed to add eBPF ringbuffer to epoll monitor (%s)", strerror(errno));
     INFO("eBPF ringbuffer added to epoll monitor");
 
     /* add netfilter queue to epoll watchlist */
@@ -266,7 +268,7 @@ int main(int argc, char *argv[])
 
     ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, nfqueue_fd, &epoll_ev);
     GOTO(ans == -1, clean_epoll_fd,
-        "failed to add netfilter queue to epoll monitor (%d)", errno);
+        "failed to add netfilter queue to epoll monitor (%s)", strerror(errno));
     INFO("netfilter queue added to epoll monitor");
 
     /* add stdin to epoll watchlist (requests debug info) */
@@ -312,12 +314,13 @@ int main(int argc, char *argv[])
             ALERT(ans < 0, "failed to consume eBPF ringbuffer sample");
         } else if (epoll_ev.data.fd == nfqueue_fd) {
             rb = read(nfqueue_fd, pkt_buff, sizeof(pkt_buff));
-            CONT(rb == -1, "failed to read packet from nf queue (%d)", errno);
+            CONT(rb == -1, "failed to read packet from nf queue (%s)",
+                strerror(errno));
 
             nfq_handle_packet(nf_handle, (char *) pkt_buff, rb); 
         } else if (epoll_ev.data.fd == STDIN_FILENO) {
             rb = read(STDIN_FILENO, usr_input, sizeof(usr_input));
-            CONT(rb == -1, "failed to read stdin input (%d)", errno);
+            CONT(rb == -1, "failed to read stdin input (%s)", strerror(errno));
 
             /* print debug info on user request */
             sc_dump_state();    
@@ -342,7 +345,7 @@ clean_netlink_sub:
 clean_epoll_fd:
     /* close epoll instance */
     ans = close(epoll_fd);
-    ALERT(ans == -1, "failed to close epoll instance (%d)", errno);
+    ALERT(ans == -1, "failed to close epoll instance (%s)", strerror(errno));
     INFO("closed epoll instance");
 
 clean_nf_queue:
@@ -366,13 +369,13 @@ clean_bpf_obj:
 clean_inotify_fd:
     /* close inotify instance */
     ans = close(inotify_fd);
-    ALERT(ans == -1, "failed to close inotify instance (%d)", errno);
+    ALERT(ans == -1, "failed to close inotify instance (%s)", strerror(errno));
     INFO("closed inotify instance");
 
 clean_netlink_fd:
     /* close netlink instance */
     ans = close(netlink_fd);
-    ALERT(ans == -1, "failed to close netlink instance (%d)", errno);
+    ALERT(ans == -1, "failed to close netlink instance (%s)", strerror(errno));
     INFO("closed netlink instance");
 
     return 0;
