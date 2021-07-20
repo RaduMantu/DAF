@@ -170,10 +170,15 @@ int main(int argc, char *argv[])
     DIE(ans == -1, "unable to set resource limit (%s)", strerror(errno));
     INFO("set new resource limits");
 
-    /* initialize socket cache internal structures */
+    /* initialize socket cache context */
     ans = sc_init();
-    DIE(ans, "unable to initialize socket cache module");
-    INFO("initialized socket cache module");
+    DIE(ans, "unable to initialize socket cache context");
+    INFO("initialized socket cache context");
+
+    /* initialize hash cache context */
+    ans = hc_init(cfg.retain_maps, cfg.no_rescan);
+    DIE(ans, "unable to initialize hash cache context");
+    INFO("initialized hash cache context");
 
     /* connect to netlink */
     netlink_fd = nl_proc_ev_connect();

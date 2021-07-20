@@ -7,7 +7,6 @@
 #include <sys/stat.h>       /* fstat                  */
 #include <sys/mman.h>       /* mmap, munmap           */
 
-#include "cli_args.h"
 #include "hash_cache.h"
 #include "util.h"
 
@@ -24,13 +23,18 @@ using namespace std;
 static unordered_map<string, uint8_t *>               path_to_hash;
 static unordered_map<uint32_t, unordered_set<string>> pid_to_objs;
 
+/* operational parameters */
+uint8_t retain_maps;    /* keep privously detected but now unmapped objects */
+uint8_t no_rescan;      /* prevent rescanning maps if set is non-empty      */
+
 /******************************************************************************
  ********************************* PUBLIC API *********************************
  ******************************************************************************/
 
-uint8_t *hc_get_sha256(char *path);
+int32_t               hc_init(uint8_t _rm, uint8_t _pm);
+uint8_t               *hc_get_sha256(char *path);
 unordered_set<string> hc_get_maps(uint32_t pid);
-void hc_proc_exit(uint32_t pid);
+void                  hc_proc_exit(uint32_t pid);
 
 /******************************************************************************
  ************************** INTERNAL HELPER FUNCTIONS *************************
@@ -105,6 +109,17 @@ _compute_sha256_clean_fd:
  ************************** PUBLIC API IMPLEMENTATION *************************
  ******************************************************************************/
 
+/* hc_init - initialize hash cache internal structures
+ *  @return : 0 if everything went well
+ */
+int32_t hc_init(uint8_t _rm, uint8_t _nr)
+{
+    retain_maps = _rm;
+    no_rescan   = _nr;
+
+    return 0;
+}
+
 /* hc_get_sha256 - returns sha256 hash of file at given path
  *  @return : pointer to buffer containing 32-byte hash or NULL on error
  *
@@ -143,7 +158,11 @@ unordered_set<string> hc_get_maps(uint32_t pid)
 
     /* depending on maps retention policy, get reference to working set      *
      * updates to rs will not affect global context --> old maps don't count */
-    unordered_set<string>& objs = cfg.retain_maps ? pid_to_objs[pid] : lms;
+    unordered_set<string>& objs = retain_maps ? pid_to_objs[pid] : lms;
+
+    /* if map rescanning is disabled and we have a non-empty set, return it */
+    if (no_rescan && objs.size())
+        return objs;
 
     /* create path to maps file */
     wb = snprintf(maps_path, sizeof(maps_path), "/proc/%hu/maps", pid);
@@ -169,6 +188,7 @@ unordered_set<string> hc_get_maps(uint32_t pid)
     }
 
     /* cleanup */
+    free(linebuf);
     fclose(maps_f);
 
     return objs;

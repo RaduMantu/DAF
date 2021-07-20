@@ -10,6 +10,8 @@ static struct argp_option options[] = {
       "eBPF object with select syscall hooks" },
     { "retain-maps", 'r', NULL,  OPTION_ARG_OPTIONAL,
       "retain objects in set even after unmapping them (default: no)" },
+    { "no-rescan",   'R', NULL, OPTION_ARG_OPTIONAL,
+      "prevent rescanning maps if set is non-empty (default: no, implies: -r" },
     { "queue",     'q', "NUM", 0,
       "netfilter queue number (default: 0)" },
     { 0 }
@@ -30,6 +32,7 @@ struct argp   argp = { options, parse_opt, args_doc, doc };
 struct config cfg  = {
     .queue_num   = 0,
     .retain_maps = 0,
+    .no_rescan   = 0,
 };
 
 /* parse_opt - parses one argument and updates relevant structures
@@ -53,6 +56,11 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         /* retain objects in set after unmapping them */
         case 'r':
             cfg.retain_maps = 1;
+            break;
+        /* prevent rescanning maps */
+        case 'R':
+            cfg.retain_maps = 1;
+            cfg.no_rescan   = 1;
             break;
         /* unknown argument */
         default:
