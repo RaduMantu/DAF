@@ -6,11 +6,33 @@
 #include <linux/inet_diag.h>    /* inet_diag_req_v2                     */
 #include <linux/connector.h>    /* CN_IDX_PROC                          */
 #include <linux/cn_proc.h>      /* proc_cn_mcast_op, PROC_EVENT_*       */
+#include <queue>                /* priority_queue                       */
 
-#include "sock_cache.h"
-#include "hash_cache.h"
+#include "sock_cache.h"         /* socket cache API                     */
+#include "hash_cache.h"         /* object hash cache API                */
+#include "proc_events.h"        /* timestamped event struct definition  */
 #include "netlink_helpers.h"
 #include "util.h"
+
+using namespace std;
+
+/******************************************************************************
+ ************************** INTERNAL DATA STRUCTURES **************************
+ ******************************************************************************/
+
+/* internal data structures
+ *  exit_events - pids of processes that have exited (to be processed later)
+ */
+static priority_queue<struct ts_event<uint32_t>> exit_events;
+
+/******************************************************************************
+ ********************************* PUBLIC API *********************************
+ ******************************************************************************/
+
+
+/******************************************************************************
+ ************************** PUBLIC API IMPLEMENTATION *************************
+ ******************************************************************************/
 
 /* nl_socket - opens a netlink socket but does not bind it
  *  @socket_type    : SOCK_RAW or SOCK_DGRAM; they are equivalent
@@ -109,7 +131,8 @@ int32_t nl_proc_ev_handle(int nl_fd)
             struct proc_event proc_ev;
         };
     } nlcn_msg;         /* netlink datagram */
-    int ans;            /* answer           */
+    int32_t  ans;       /* answer           */
+    uint32_t pid;
 
     /* read netlink datagram */
     ans = read(nl_fd, &nlcn_msg, sizeof(nlcn_msg));
@@ -132,9 +155,9 @@ int32_t nl_proc_ev_handle(int nl_fd)
 
             break;
         case PROC_EVENT_EXIT:
-            /* update socket & hash cache state */
-            sc_proc_exit(nlcn_msg.proc_ev.event_data.exit.process_pid);
-            hc_proc_exit(nlcn_msg.proc_ev.event_data.exit.process_pid);
+            /* register exit event to be handled later, in NFQ handler */
+            pid = nlcn_msg.proc_ev.event_data.exit.process_pid;
+            exit_events.emplace(pid);
 
             break;
         /* don't care */
@@ -143,6 +166,41 @@ int32_t nl_proc_ev_handle(int nl_fd)
     }
 
     return 0;
+}
+
+/* nl_delayed_ev_handle - handles delayed events
+ *  @delta_t : minimum time difference in microsecs between emplacing the event
+ *             and actually processing it
+ *
+ * for example, we don't want to process exit events for processes immediately
+ * and free up the socket cache internal structures because packets still on
+ * the path, that have not reached the Netfilter Queue & were processed will no
+ * longer be recognized.
+ */
+void nl_delayed_ev_handle(uint64_t delta_t)
+{
+    struct timeval tv;
+    uint64_t       ct;
+
+    /* get current epoch time in microsecs */
+    gettimeofday(&tv, NULL);
+    ct = (uint64_t) (tv.tv_sec * 1e6 + tv.tv_usec);
+
+    /* for each event, ordered by emplacement time */
+    while (exit_events.size()) {
+        auto &ce = exit_events.top();
+
+        /* break if time since emplacement is lower than delta */
+        if (ct - ce.ts < delta_t)
+            break;
+
+        /* process event (timeout already occurred) */
+        sc_proc_exit(ce.ev_val);
+        hc_proc_exit(ce.ev_val);
+
+        /* pop element that was just processed from queue */
+        exit_events.pop();
+    }
 }
 
 /* nl_sock_diag - returns the inode of a specific named socket

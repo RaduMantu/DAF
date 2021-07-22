@@ -38,6 +38,7 @@ struct sample {
 
 
 int process_ebpf_sample(void *ctx, void *data, size_t len);
+void ebpf_delayed_ev_handle(uint64_t delta_t);
 
 #endif
 

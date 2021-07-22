@@ -89,11 +89,6 @@ int nfq_handler(struct nfq_q_handle *qh,
             goto pass_unchanged;
     }
 
-    /* find pids that have access to this src port */
-    pid_set_p = sc_get_pid(iph->protocol, iph->saddr, iph->daddr, src_port,
-                    dst_port);
-    GOTO(!pid_set_p, pass_unchanged, "unable to find pid set for packet");
-
     /* just debug info */
     DEBUG("packet received "
           "src_ip:%hhu.%hhu.%hhu.%hhu "
@@ -106,6 +101,16 @@ int nfq_handler(struct nfq_q_handle *qh,
           (iph->daddr >> 16) & 0xff, (iph->daddr >> 24) & 0xff,
           ntohs(src_port), ntohs(dst_port));
 
+    /* process any delayed events that have timed out */
+    nl_delayed_ev_handle(cfg.proc_delay);
+    ebpf_delayed_ev_handle(cfg.proc_delay);
+
+    /* find pids that have access to this src port */
+    pid_set_p = sc_get_pid(iph->protocol, iph->saddr, iph->daddr, src_port,
+                    dst_port);
+    GOTO(!pid_set_p, pass_unchanged, "unable to find pid set for packet");
+
+    /* more debug info */
     for (auto pid_it : *pid_set_p) {
         printf(">>> pid: %u\n", pid_it);
         

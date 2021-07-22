@@ -7,6 +7,7 @@
 /* structure holding cli arguments information */
 struct config {
     char     ebpf_path[64];   /* path to ebpf object                    */
+    uint64_t proc_delay;      /* delay in processing certain events     */
     uint16_t queue_num;       /* netfilter queue number                 */
     uint8_t  retain_maps : 1; /* keep track of unmapped objects as well */
     uint8_t  no_rescan   : 1; /* prevent rescanning maps                */

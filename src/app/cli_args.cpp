@@ -12,8 +12,11 @@ static struct argp_option options[] = {
       "retain objects in set even after unmapping them (default: no)" },
     { "no-rescan",   'R', NULL, OPTION_ARG_OPTIONAL,
       "prevent rescanning maps if set is non-empty (default: no, implies: -r" },
-    { "queue",     'q', "NUM", 0,
+    { "queue",       'q', "NUM", 0,
       "netfilter queue number (default: 0)" },
+    { "proc-delay",  'd', "NUM", 0,
+      "delay between process exit event rcv and handling it, in us "
+      " (default: 50ms)" },
     { 0 }
 };
 
@@ -30,6 +33,7 @@ static char doc[] = "app-fw -- network traffic filter based on originating"
 /* declaration of relevant structures */
 struct argp   argp = { options, parse_opt, args_doc, doc };
 struct config cfg  = {
+    .proc_delay  = 50'000,
     .queue_num   = 0,
     .retain_maps = 0,
     .no_rescan   = 0,
@@ -48,6 +52,14 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         /* ebpf object */
         case 'e':
             strncpy(cfg.ebpf_path, arg, 64);
+            break;
+        /* event processing delay */
+        case 'd':
+            sscanf(arg, "%lu", &cfg.proc_delay);
+
+            /* convert from ms in us */
+            cfg.proc_delay *= 1'000;
+
             break;
         /* netfilter queue number */
         case 'q':
