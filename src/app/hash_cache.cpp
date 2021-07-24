@@ -173,6 +173,16 @@ unordered_set<string> hc_get_maps(uint32_t pid)
     linebuf    = (char *) malloc(512);
     linebuf_sz = 512;
 
+
+    /* TODO: this method can cause segfaults if the process terminates
+     *       early; try to replace with a single read() and tokenize string
+     *
+     * to recreate problem:
+     *      $ nc fep.grid.pub.ro 22
+     *      ENTER
+     *
+     *      repeat as many times as needed; will cause segfault sometime
+     */
     while ((rb = getline(&linebuf, &linebuf_sz, maps_f)) != -1) {
         /* extract relevant fields from line entry */
         sscanf(linebuf, "%*lx-%*lx %*c%*c%c%*c %*x %*hhx:%*hhx %*u %s\n",

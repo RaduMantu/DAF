@@ -90,15 +90,17 @@ int nfq_handler(struct nfq_q_handle *qh,
     }
 
     /* just debug info */
-    DEBUG("packet received "
+    DEBUG("packet | "
           "src_ip:%hhu.%hhu.%hhu.%hhu "
           "dst_ip:%hhu.%hhu.%hhu.%hhu "
+          "proto: %s "
           "src_port:%hu "
           "dst_port:%hu ",
           (iph->saddr >>  0) & 0xff, (iph->saddr >>  8) & 0xff,
           (iph->saddr >> 16) & 0xff, (iph->saddr >> 24) & 0xff,
           (iph->daddr >>  0) & 0xff, (iph->daddr >>  8) & 0xff,
           (iph->daddr >> 16) & 0xff, (iph->daddr >> 24) & 0xff,
+          iph->protocol == IPPROTO_TCP ? "TCP" : "UDP",
           ntohs(src_port), ntohs(dst_port));
 
     /* process any delayed events that have timed out */
@@ -139,24 +141,27 @@ pass_unchanged:
  */
 int main(int argc, char *argv[])
 {
-    int                       ans;              /* answer                     */
-    int                       netlink_fd;       /* netlink socket             */
-    int                       inotify_fd;       /* inotify file descriptor    */
-    int                       nfqueue_fd;       /* nfq file descriptor        */
-    int                       bpf_map_fd;       /* eBPF map file descriptor   */
-    int                       epoll_fd;         /* epoll file descriptor      */
-    struct epoll_event        epoll_ev;         /* epoll event                */
-    struct sigaction          act;              /* signal response action     */
-    struct rlimit             rlim;             /* resource limit             */
-    struct bpf_object         *bpf_obj;         /* eBPF object file           */
-    struct bpf_program        *bpf_prog;        /* eBPF program in obj        */
-    vector<struct bpf_link *> bpf_links;        /* links to attached programs */
-    struct ring_buffer        *bpf_ringbuf;     /* eBPF ring buffer reference */
-    struct nfq_handle         *nf_handle;       /* NFQUEUE handle             */
-    struct nfq_q_handle       *nfq_handle;      /* netfilter queue handle     */
-    uint8_t                   pkt_buff[0xffff]; /* nfq packet buffer          */
-    char                      usr_input[256];   /* user stdin input buffer    */
-    ssize_t                   rb;               /* bytes read                 */
+    int                       ans;              /* answer                      */
+    int                       netlink_fd;       /* netlink socket              */
+    int                       inotify_fd;       /* inotify file descriptor     */
+    int                       nfqueue_fd;       /* nfq file descriptor         */
+    int                       bpf_map_fd;       /* eBPF map file descriptor    */
+    int                       epoll_fd;         /* main epoll file descriptor  */
+    int                       epoll_p0_fd;      /* priority 0 (top) epoll fd   */
+    int                       epoll_p1_fd;      /* priority 1 epoll fd         */
+    int                       epoll_sel_fd;     /* currently selected epoll fd */
+    struct epoll_event        epoll_ev[2];      /* epoll events                */
+    struct sigaction          act;              /* signal response action      */
+    struct rlimit             rlim;             /* resource limit              */
+    struct bpf_object         *bpf_obj;         /* eBPF object file            */
+    struct bpf_program        *bpf_prog;        /* eBPF program in obj         */
+    vector<struct bpf_link *> bpf_links;        /* links to attached programs  */
+    struct ring_buffer        *bpf_ringbuf;     /* eBPF ring buffer reference  */
+    struct nfq_handle         *nf_handle;       /* NFQUEUE handle              */
+    struct nfq_q_handle       *nfq_handle;      /* netfilter queue handle      */
+    uint8_t                   pkt_buff[0xffff]; /* nfq packet buffer           */
+    char                      usr_input[256];   /* user stdin input buffer     */
+    ssize_t                   rb;               /* bytes read                  */
 
     /* parse command line arguments */
     argp_parse(&argp, argc, argv, 0, 0, &cfg);
@@ -239,60 +244,88 @@ int main(int argc, char *argv[])
     nfqueue_fd = nfq_fd(nf_handle);
     INFO("obtained file descriptor of associated nfq socket");
 
-    /* create epoll instance */
+    /* create top level epoll instance */
     epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     GOTO(epoll_fd == -1, clean_nf_queue, "failed to create epoll instance (%s)",
         strerror(errno));
-    INFO("epoll instance created");
+    INFO("top level epoll instance created");
 
-    /* add netlink socket to epoll watchlist */
-    epoll_ev.data.fd = netlink_fd;
-    epoll_ev.events  = EPOLLIN;
+    /* create priority ordering epoll instances */
+    epoll_p0_fd = epoll_create1(EPOLL_CLOEXEC);
+    GOTO(epoll_p0_fd == -1, clean_epoll_fd,
+        "failed to create epoll instance (%s)", strerror(errno));
+    INFO("priority-0 epoll instance created");
 
-    ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, netlink_fd, &epoll_ev);
-    GOTO(ans == -1, clean_epoll_fd,
+    epoll_p1_fd = epoll_create1(EPOLL_CLOEXEC);
+    GOTO(epoll_p1_fd == -1, clean_epoll_fd_p0,
+        "failed to create epoll instance (%s)", strerror(errno));
+    INFO("priority-1 epoll instance created");
+
+    /* add netlink socket to epoll watchlist (top prio) */
+    epoll_ev[0].data.fd = netlink_fd;
+    epoll_ev[0].events  = EPOLLIN;
+
+    ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, netlink_fd, &epoll_ev[0]);
+    GOTO(ans == -1, clean_epoll_fd_p1,
         "failed to add netlink to epoll monitor (%s)", strerror(errno));
-    INFO("netlink socket added to epoll monitor");
+    INFO("netlink socket added to epoll-p0 monitor");
 
-    /* add inotify instance to epoll watchlist */
-    epoll_ev.data.fd = inotify_fd;
-    epoll_ev.events  = EPOLLIN;
+    /* add inotify instance to epoll watchlist (top prio) */
+    epoll_ev[0].data.fd = inotify_fd;
+    epoll_ev[0].events  = EPOLLIN;
 
-    ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, inotify_fd, &epoll_ev);
-    GOTO(ans == -1, clean_epoll_fd,
+    ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, inotify_fd, &epoll_ev[0]);
+    GOTO(ans == -1, clean_epoll_fd_p1,
         "failed to add inotify to epoll monitor (%s)", strerror(errno));
-    INFO("inotify instance added to epoll monitor");
+    INFO("inotify instance added to epoll-p0 monitor");
 
-    /* add eBPF ringbuffer to epoll watchlist */
-    epoll_ev.data.fd = bpf_map_fd;
-    epoll_ev.events  = EPOLLIN;
+    /* add eBPF ringbuffer to epoll watchlist (top prio) */
+    epoll_ev[0].data.fd = bpf_map_fd;
+    epoll_ev[0].events  = EPOLLIN;
 
-    ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, bpf_map_fd, &epoll_ev);
-    GOTO(ans == -1, clean_epoll_fd,
+    ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, bpf_map_fd, &epoll_ev[0]);
+    GOTO(ans == -1, clean_epoll_fd_p1,
         "failed to add eBPF ringbuffer to epoll monitor (%s)", strerror(errno));
-    INFO("eBPF ringbuffer added to epoll monitor");
+    INFO("eBPF ringbuffer added to epoll-p0 monitor");
 
-    /* add netfilter queue to epoll watchlist */
-    epoll_ev.data.fd = nfqueue_fd;
-    epoll_ev.events  = EPOLLIN;
+    /* add netfilter queue to epoll watchlist (bottom prio) */
+    epoll_ev[0].data.fd = nfqueue_fd;
+    epoll_ev[0].events  = EPOLLIN;
 
-    ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, nfqueue_fd, &epoll_ev);
-    GOTO(ans == -1, clean_epoll_fd,
-        "failed to add netfilter queue to epoll monitor (%s)", strerror(errno));
+    ans = epoll_ctl(epoll_p1_fd, EPOLL_CTL_ADD, nfqueue_fd, &epoll_ev[0]);
+    GOTO(ans == -1, clean_epoll_fd_p1,
+        "failed to add netfilter queue to epoll-p1 monitor (%s)", strerror(errno));
     INFO("netfilter queue added to epoll monitor");
 
-    /* add stdin to epoll watchlist (requests debug info) */
-    epoll_ev.data.fd = STDIN_FILENO;
-    epoll_ev.events  = EPOLLIN;
+    /* add stdin to epoll watchlist (bottom prio) */
+    epoll_ev[0].data.fd = STDIN_FILENO;
+    epoll_ev[0].events  = EPOLLIN;
 
-    ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, STDIN_FILENO, &epoll_ev);
-    GOTO(ans == -1, clean_epoll_fd,
-        "failed to add stdin to epoll monitor");
+    ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, STDIN_FILENO, &epoll_ev[0]);
+    GOTO(ans == -1, clean_epoll_fd_p1,
+        "failed to add stdin to epoll-p1 monitor");
     INFO("stdin added to epoll monitor");
+
+    /* add priority ordering epoll instances to top level epoll selector */
+    epoll_ev[0].data.fd = epoll_p0_fd;
+    epoll_ev[0].events  = EPOLLIN;
+
+    ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, epoll_p0_fd, &epoll_ev[0]);
+    GOTO(ans == -1, clean_epoll_fd_p1,
+        "failed to add epoll-p0 to epoll monitor (%s)", strerror(errno));
+    INFO("epoll-p0 added to top level epoll monitor");
+
+    epoll_ev[0].data.fd = epoll_p1_fd;
+    epoll_ev[0].events  = EPOLLIN;
+
+    ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, epoll_p1_fd, &epoll_ev[0]);
+    GOTO(ans == -1, clean_epoll_fd_p1,
+        "failed to add epoll-p1 to epoll monitor (%s)", strerror(errno));
+    INFO("epoll-p1 added to top level epoll monitor");
 
     /* subscribe to netlink proc events */
     ans = nl_proc_ev_subscribe(netlink_fd, true);
-    GOTO(ans == -1, clean_epoll_fd,
+    GOTO(ans == -1, clean_epoll_fd_p1,
         "failed to subscribe to netlink proc events");
     INFO("now subscribed to netlink proc events");
 
@@ -309,26 +342,40 @@ int main(int argc, char *argv[])
     /* main loop */
     INFO("main loop starting");
     while (!bml) {
-        /* wait for epoll event */
-        ans = epoll_wait(epoll_fd, &epoll_ev, 1, -1);
-        DIE(ans == -1 && errno != EINTR, 
-            "error while waiting for epoll events");
+        /* wait for top level epoll event */
+        ans = epoll_wait(epoll_fd, epoll_ev, 2, -1);
+        DIE(ans == -1 && errno != EINTR, "error waiting for epoll events (%s)",
+            strerror(errno));
 
+        /* determine if any of the (max 2) events were top priority */
+        epoll_sel_fd = epoll_p1_fd;
+        for (size_t i=0; i<ans; ++i)
+            if (epoll_ev[i].data.fd == epoll_p0_fd) {
+                epoll_sel_fd = epoll_p0_fd;
+                break;
+            }
+
+        /* we know that event is available on selected priority level *
+         * here we prioritize events relating to sockets, not NFQ     */
+        ans = epoll_wait(epoll_sel_fd, &epoll_ev[0], 1, -1);
+        DIE(ans == -1 && errno != EINTR, "error waiting for epoll events (%s)",
+            strerror(errno));
+    
         /* handle event */
-        if (epoll_ev.data.fd == netlink_fd) {
+        if (epoll_ev[0].data.fd == netlink_fd) {
             ans = nl_proc_ev_handle(netlink_fd);
-        } else if (epoll_ev.data.fd == inotify_fd) {
+        } else if (epoll_ev[0].data.fd == inotify_fd) {
             /* TODO */
-        } else if (epoll_ev.data.fd == bpf_map_fd) {
+        } else if (epoll_ev[0].data.fd == bpf_map_fd) {
             ans = ring_buffer__consume(bpf_ringbuf);
             ALERT(ans < 0, "failed to consume eBPF ringbuffer sample");
-        } else if (epoll_ev.data.fd == nfqueue_fd) {
+        } else if (epoll_ev[0].data.fd == nfqueue_fd) {
             rb = read(nfqueue_fd, pkt_buff, sizeof(pkt_buff));
             CONT(rb == -1, "failed to read packet from nf queue (%s)",
                 strerror(errno));
 
             nfq_handle_packet(nf_handle, (char *) pkt_buff, rb); 
-        } else if (epoll_ev.data.fd == STDIN_FILENO) {
+        } else if (epoll_ev[0].data.fd == STDIN_FILENO) {
             rb = read(STDIN_FILENO, usr_input, sizeof(usr_input));
             CONT(rb == -1, "failed to read stdin input (%s)", strerror(errno));
 
@@ -352,11 +399,21 @@ clean_netlink_sub:
     ALERT(ans == -1, "failed to unsubscribe from netlink proc events");
     INFO("unsubscribed from netlink proc events");
 
+clean_epoll_fd_p1:
+    ans = close(epoll_p1_fd);
+    ALERT(ans == -1, "failed to close epoll instance (%s)", strerror(errno));
+    INFO("closed epoll-p1 instance");
+
+clean_epoll_fd_p0:
+    ans = close(epoll_p0_fd);
+    ALERT(ans == -1, "failed to close epoll instance (%s)", strerror(errno));
+    INFO("closed epoll-p0 instance");
+
 clean_epoll_fd:
     /* close epoll instance */
     ans = close(epoll_fd);
     ALERT(ans == -1, "failed to close epoll instance (%s)", strerror(errno));
-    INFO("closed epoll instance");
+    INFO("closed top level epoll instance");
 
 clean_nf_queue:
     nfq_destroy_queue(nfq_handle);
