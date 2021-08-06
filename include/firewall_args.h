@@ -1,8 +1,8 @@
 #include <argp.h>
 #include <stdint.h>
 
-#ifndef _CLI_ARGS_H
-#define _CLI_ARGS_H
+#ifndef _FIREWALL_ARGS_H
+#define _FIREWALL_ARGS_H
 
 /* structure holding cli arguments information */
 struct config {

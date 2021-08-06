@@ -20,25 +20,34 @@ LLCFLAGS   = -march=bpf -filetype=obj
 # identify sources and create object file targets
 #   main userspace app objects go into OBJ for remake caching
 #   eBPF objects go straight into BIN to be used by final app
-SOURCES_APP = $(wildcard $(SRC)/app/*.cpp)
-OBJECTS_APP = $(patsubst $(SRC)/app/%.cpp, $(OBJ)/%.o, $(SOURCES_APP))
+SOURCES_FW  = $(wildcard $(SRC)/firewall/*.cpp)
+OBJECTS_FW  = $(patsubst $(SRC)/firewall/%.cpp, $(OBJ)/%.o, $(SOURCES_FW))
+
+SOURCES_CTL = $(wildcard $(SRC)/controller/*.cpp)
+OBJECTS_CTL = $(patsubst $(SRC)/controller/%.cpp, $(OBJ)/%.o, $(SOURCES_CTL))
 
 SOURCES_BPF = $(wildcard $(SRC)/kern/*.c)
 OBJECTS_BPF = $(patsubst $(SRC)/kern/%.c, $(BIN)/%.o, $(SOURCES_BPF))
 
 # top level rule
-build: dirs $(BIN)/app-fw $(OBJECTS_BPF)
+build: dirs $(BIN)/app-fw $(BIN)/ctl-fw $(OBJECTS_BPF)
 
 # non-persistent folder creation rule
 dirs:
 	@mkdir -p $(BIN) $(OBJ)
 
-# final app binary generation rule
-$(BIN)/app-fw: $(OBJECTS_APP)
+# final binary generation rules
+$(BIN)/app-fw: $(OBJECTS_FW)
 	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-# app object generation rule
-$(OBJ)/%.o: $(SRC)/app/%.cpp | $(INC)/%.h $(INC)/util.h
+$(BIN)/ctl-fw: $(OBJECTS_CTL)
+	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+# object generation rules
+$(OBJ)/%.o: $(SRC)/firewall/%.cpp
+	$(CXX) -c -I $(INC) $(CXXFLAGS) -o $@ $<
+
+$(OBJ)/%.o: $(SRC)/controller/%.cpp
 	$(CXX) -c -I $(INC) $(CXXFLAGS) -o $@ $<
 
 # eBPF object generation rule

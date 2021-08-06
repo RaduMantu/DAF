@@ -1,6 +1,6 @@
 #include <string.h>     /* strncpy */
 
-#include "cli_args.h"
+#include "firewall_args.h"
 #include "util.h"
 
 

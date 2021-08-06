@@ -14,7 +14,7 @@
 #include <bpf/libbpf.h>         /* eBPF API */
 #include <vector>               /* vector */
 
-#include "cli_args.h"
+#include "firewall_args.h"
 #include "netlink_helpers.h"
 #include "ebpf_helpers.h"
 #include "nfq_helpers.h"
