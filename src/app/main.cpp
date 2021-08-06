@@ -1,30 +1,31 @@
 #include <stdio.h>
 #include <stdint.h>             /* [u]int*_t */
 #include <signal.h>             /* signal, siginterrupt */
-#include <unistd.h>             /* read, write, close */
-#include <arpa/inet.h>
+#include <unistd.h>             /* read, write, close, unlink */
 #include <netinet/in.h>         /* IPPROTO_* */
 #include <netinet/ip.h>         /* iphdr */
 #include <netinet/tcp.h>        /* tcphdr */
 #include <netinet/udp.h>        /* udphdr */
 #include <sys/socket.h>         /* socket */
+#include <sys/un.h>             /* sockaddr_un */
 #include <sys/inotify.h>        /* inotify */
 #include <sys/epoll.h>          /* epoll */
 #include <sys/resource.h>       /* setrlimit */
-#include <bpf/libbpf.h>
-#include <bpf/bpf.h>
+#include <bpf/libbpf.h>         /* eBPF API */
 #include <vector>               /* vector */
 
 #include "cli_args.h"
 #include "netlink_helpers.h"
-#include "filter.h"
 #include "ebpf_helpers.h"
+#include "nfq_helpers.h"
 #include "sock_cache.h"
 #include "hash_cache.h"
+#include "filter.h"
 #include "util.h"
 
 using namespace std;
 
+#define CTL_SOCK_NAME "/tmp/app_fw.socket"
 
 static bool bml = false;    /* break main loop */
 
@@ -63,6 +64,8 @@ int main(int argc, char *argv[])
     struct nfq_handle         *nf_handle;       /* NFQUEUE handle              */
     struct nfq_q_handle       *nfq_handle;      /* netfilter queue handle      */
     struct nfq_op_param       nfq_opp;          /* nfq operational parameters  */
+    struct sockaddr_un        us_name;          /* unix socket name            */
+    int                       us_csock_fd;      /* unix connection socket      */
     uint8_t                   pkt_buff[0xffff]; /* nfq packet buffer           */
     char                      usr_input[256];   /* user stdin input buffer     */
     ssize_t                   rb;               /* bytes read                  */
@@ -94,9 +97,26 @@ int main(int argc, char *argv[])
     DIE(ans, "unable to initialize hash cache context");
     INFO("initialized hash cache context");
 
+    /* create ctl unix socket */
+    us_csock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    DIE(us_csock_fd == -1, "unable to open AF_UNIX socket (%s)",
+        strerror(errno));
+    INFO("created ctl unix socket");
+
+    /* bind ctl unix socket to name */
+    memset(&us_name, 0, sizeof(us_name));
+    us_name.sun_family = AF_UNIX;
+    strncpy(us_name.sun_path, CTL_SOCK_NAME, sizeof(us_name.sun_path) - 1);
+
+    ans = bind(us_csock_fd, (struct sockaddr *) &us_name, sizeof(us_name));
+    GOTO(ans == -1, clean_us_csock_fd,
+        "unable to bind ctl unix socket to name (%s)", strerror(errno));
+    INFO("bound ctl unix socket to name");
+
     /* connect to netlink */
     netlink_fd = nl_proc_ev_connect();
-    DIE(netlink_fd == -1, "failed to establish netlink connection");
+    GOTO(netlink_fd == -1, clean_us_csock_fd,
+        "failed to establish netlink connection");
     INFO("netlink connection established");
 
     /* create inotify instance */
@@ -169,6 +189,15 @@ int main(int argc, char *argv[])
         "failed to create epoll instance (%s)", strerror(errno));
     INFO("priority-1 epoll instance created");
 
+    /* add ctl unix socket to epoll watchlist (top prio) */
+    epoll_ev[0].data.fd = us_csock_fd;
+    epoll_ev[0].events  = EPOLLIN;
+
+    ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, us_csock_fd, &epoll_ev[0]);
+    GOTO(ans == -1, clean_epoll_fd_p1,
+        "failed to add ctl unix socket to epoll monitor (%s)", strerror(errno));
+    INFO("ctl unix socket added to epoll-p0 monitor");
+
     /* add netlink socket to epoll watchlist (top prio) */
     epoll_ev[0].data.fd = netlink_fd;
     epoll_ev[0].events  = EPOLLIN;
@@ -231,6 +260,12 @@ int main(int argc, char *argv[])
         "failed to add epoll-p1 to epoll monitor (%s)", strerror(errno));
     INFO("epoll-p1 added to top level epoll monitor");
 
+    /* listen for new connections on ctl unix socket */
+    ans = listen(us_csock_fd, 1);
+    GOTO(ans == -1, clean_epoll_fd_p1, "failed to listen on unix socket (%s)",
+        strerror(errno));
+    INFO("listening for new connections on ctl unix socket");
+
     /* subscribe to netlink proc events */
     ans = nl_proc_ev_subscribe(netlink_fd, true);
     GOTO(ans == -1, clean_epoll_fd_p1,
@@ -268,9 +303,11 @@ int main(int argc, char *argv[])
         ans = epoll_wait(epoll_sel_fd, &epoll_ev[0], 1, -1);
         DIE(ans == -1 && errno != EINTR, "error waiting for epoll events (%s)",
             strerror(errno));
-    
+   
         /* handle event */
-        if (epoll_ev[0].data.fd == netlink_fd) {
+        if (epoll_ev[0].data.fd == us_csock_fd) {
+            ans = flt_handle_ctl(us_csock_fd);
+        } else if (epoll_ev[0].data.fd == netlink_fd) {
             ans = nl_proc_ev_handle(netlink_fd);
         } else if (epoll_ev[0].data.fd == inotify_fd) {
             /* TODO */
@@ -352,6 +389,17 @@ clean_netlink_fd:
     ans = close(netlink_fd);
     ALERT(ans == -1, "failed to close netlink instance (%s)", strerror(errno));
     INFO("closed netlink instance");
+
+clean_us_csock_fd:
+    /* close & unlink ctl unix socket */
+    ans = close(us_csock_fd);
+    ALERT(ans == -1, "failed to close ctl unix socket (%s)", strerror(errno));
+    INFO("closed ctl unix socket");
+
+    ans = unlink(CTL_SOCK_NAME);
+    ALERT(ans == -1, "failed to unlink named socket %s (%s)", CTL_SOCK_NAME,
+        strerror(errno));    
+    INFO("destroyed named unix socket");
 
     return 0;
 }
