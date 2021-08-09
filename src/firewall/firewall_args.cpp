@@ -4,11 +4,11 @@
 #include "util.h"
 
 
-/* command line argument */
+/* command line arguments */
 static struct argp_option options[] = {
     { "ebpf-obj",  'e', "OBJ", 0,
       "eBPF object with select syscall hooks" },
-    { "retain-maps", 'r', NULL,  OPTION_ARG_OPTIONAL,
+    { "retain-maps", 'r', NULL, OPTION_ARG_OPTIONAL,
       "retain objects in set even after unmapping them (default: no)" },
     { "no-rescan",   'R', NULL, OPTION_ARG_OPTIONAL,
       "prevent rescanning maps if set is non-empty (default: no, implies: -r" },
@@ -23,7 +23,7 @@ static struct argp_option options[] = {
 /* argument parser prototype */
 static error_t parse_opt(int, char *, struct argp_state *);
 
-/* descro[topm pf accepted non-option arguments */
+/* description of accepted non-option arguments */
 static char args_doc[] = "";
 
 /* program documentation */

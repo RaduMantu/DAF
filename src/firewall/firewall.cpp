@@ -71,7 +71,8 @@ int main(int argc, char *argv[])
     ssize_t                   rb;               /* bytes read                  */
 
     /* parse command line arguments */
-    argp_parse(&argp, argc, argv, 0, 0, &cfg);
+    ans = argp_parse(&argp, argc, argv, 0, 0, &cfg);
+    DIE(ans, "error parsing cli arguments");
     INFO("parsed cli arguments");
 
     /* set gracious behaviour for Ctrl^C signal                            *
