@@ -79,6 +79,10 @@ struct ctl_msg cfg  = {
  */
 static int32_t isnumber(char *s)
 {
+    /* null string is not a number */
+    if (!*s)
+        return 0;
+
     for (; *s; ++s)
         if (*s < '0' || *s > '9')
             return 0;
@@ -117,8 +121,13 @@ static int32_t parse_cidr_addr(char *str, uint32_t *addr, uint32_t *mask)
     else
         prefix = 32;
 
-    /* convert CIDR network mask to binary form (network order) */
-    *mask = htonl((-1) << (32 - prefix));
+    /* convert CIDR network mask to binary form (network order)             *
+     * NOTE: there is a corner case where a (uint32_t) -1 shifted left (or  *
+     *       right) by its size (i.e.: 32) will fail; that's why we need to *
+     *       cast -1 to uint64_t so that all bits can overflow before       *
+     *       recast-ing it to uint32_t. Note that shifting by 31 and then   *
+     *       by 1 will achieve the expected result                          */
+    *mask = htonl((uint64_t) (-1) << (32 - prefix));
 
     /* extract ip address & apply mask */
     ans = inet_pton(AF_INET, str, addr);
