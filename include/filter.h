@@ -36,6 +36,9 @@ struct flt_crit {
     uint32_t dst_ip_mask;
     uint8_t  l4_proto;
 
+    /* verdict */
+    uint8_t verdict;
+
     /* layer 4 */
     uint16_t src_port;
     uint16_t dst_port;
@@ -43,11 +46,11 @@ struct flt_crit {
     /* process identity */
     uint8_t sha256_md[32];
 
-    /* verdict */
-    uint8_t verdict;
-
     /* meta */
     uint32_t flags;
+    
+    /* reserved for 64-byte alignment */
+    uint8_t reserved[6];
 };
 
 /* controller communication flags (16b) */
