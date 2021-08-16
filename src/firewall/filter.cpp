@@ -1,9 +1,14 @@
-#include <unistd.h>         /* read, close */
-#include <sys/socket.h>     /* accept      */
-#include <sys/uio.h>        /* writev      */
+#include <unistd.h>             /* read, close      */
+#include <sys/socket.h>         /* accept           */
+#include <sys/uio.h>            /* writev           */
+#include <netinet/ip.h>
+#include <netinet/udp.h>        /* udphdr           */
+#include <netinet/tcp.h>        /* tcphdr           */
 
-#include <vector>           /* vector  */
-#include <iterator>         /* advance */
+#include <unordered_set>        /* unordered set */
+#include <iterator>             /* advance       */
+#include <vector>               /* vector        */
+#include <string>               /* string        */
 
 #include "filter.h"
 #include "util.h"
@@ -17,6 +22,15 @@ using namespace std;
 static vector<struct flt_crit> input_chain;
 static vector<struct flt_crit> output_chain;
 
+/* define these separately; errors if including *
+ * <linux/netfilter.h> and <netinet/ip.h>       */
+#ifndef NF_DROP
+#define NF_DROP   0
+#endif
+
+#ifndef NF_ACCEPT
+#define NF_ACCEPT 1
+#endif
 
 /******************************************************************************
  ************************** INTERNAL HELPER FUNCTIONS *************************
@@ -67,6 +81,143 @@ _send_chain(int32_t us_dsock_fd, vector<struct flt_crit>& chain)
  ************************** PUBLIC API IMPLEMENTATION *************************
  ******************************************************************************/
 
+/* get_verdict - establishes accept / drop verdict for packet
+ *  @pkt    : packet buffer
+ *  @maps   : vector of hashes for memory mapped objects, for each process
+ *  @chain  : {INPUT,OUTPUT}_CHAIN (see filter.h)
+ *
+ *  @return : NF_{ACCEPT,DROP}
+ */
+uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
+{
+    vector<struct flt_crit> *sel_chain;     /* pointer to selected chain */
+    struct iphdr            *iph;           /* ip header                 */
+    struct tcphdr           *tcph;          /* tch header                */
+    struct udphdr           *udph;          /* udp header                */
+    uint8_t                 matched;        /* matching object was found */
+
+    /* get reference to correct chain */
+    if (chain == INPUT_CHAIN)
+        sel_chain = &input_chain;
+    else if (chain == OUTPUT_CHAIN)
+        sel_chain = &output_chain;
+    else {
+        WAR("incorrect chain specified; aborting with NF_ACCEPT");
+        return NF_ACCEPT;
+    }
+
+    /* cast packet buffer to iphdr */
+    iph = (struct iphdr *) pkt;
+
+    /* for each rule in chain */
+    for (auto& rule : *sel_chain) {
+        /* check layer 3 fields */
+        if ((rule.flags & FLT_SRC_IP)
+            && (((iph->saddr & rule.src_ip_mask) != rule.src_ip)
+                == !(rule.flags & FLT_SRC_IP_INV)))
+            continue;
+        if ((rule.flags & FLT_DST_IP)
+            && (((iph->daddr & rule.dst_ip_mask) != rule.dst_ip)
+                == !(rule.flags & FLT_DST_IP_INV)))
+            continue;
+        if ((rule.flags & FLT_L4_PROTO)
+            && ((iph->protocol != rule.l4_proto)
+                == !(rule.flags & FLT_L4_PROTO_INV)))
+            continue;
+
+        /* check layer 4 fields (depending on protocol) */
+        switch (iph->protocol) {
+            case IPPROTO_TCP:
+                tcph = (struct tcphdr *) &((uint8_t *) iph)[iph->ihl * 4];
+
+                if ((rule.flags & FLT_SRC_PORT)
+                    && ((tcph->source != rule.src_port)
+                        == !(rule.flags & FLT_SRC_PORT_INV)))
+                    continue;
+                if ((rule.flags & FLT_DST_PORT)
+                    && ((tcph->dest != rule.dst_port)
+                        == !(rule.flags & FLT_DST_PORT_INV)))
+                    continue;
+
+                break;
+            case IPPROTO_UDP:
+                udph = (struct udphdr *) &((uint8_t *) iph)[iph->ihl * 4];
+
+                if ((rule.flags & FLT_SRC_PORT)
+                    && ((udph->source != rule.src_port)
+                        == !(rule.flags & FLT_SRC_PORT_INV)))
+                    continue;
+                if ((rule.flags & FLT_DST_PORT)
+                    && ((udph->dest != rule.dst_port)
+                        == !(rule.flags & FLT_DST_PORT_INV)))
+                    continue;
+
+                break;
+            /* ignore rule for unkown l4 protocol */
+            default:
+                continue;
+        }
+
+        /* if not checking process identity, consider this a match */
+        if (!(rule.flags & FLT_HASH))
+            return (rule.verdict & VRD_ACCEPT) ? NF_ACCEPT : NF_DROP;
+
+        /* check single hash match                                  *
+         * NOTE: if verdict is DROP, one process is enough to match *
+         *       if verdict is ACCEPT, all process must match       *
+         *       check inversion does not affect the above          */
+        if (rule.flags & FLT_SINGLE_HASH) {
+            /* for each process that could have sent this packet */
+            for (auto& pm : maps) {
+                /* initial assumption is that no objects match */
+                matched = 0;
+
+                /* for each object hash in current process */
+                for (auto& h : pm) {
+                    /* match found */
+                    if (!memcmp(h, rule.sha256_md, sizeof(rule.sha256_md))
+                        == !(rule.flags & FLT_HASH_INV))
+                    {
+                        /* if verdict is DROP, condition is satisfied */
+                        if (rule.verdict & VRD_DROP)
+                            return NF_DROP;
+
+                        /* if verdict is ACCEPT, move on to next process */
+                        matched = 1;
+                        break;
+                    }
+                }
+
+                /* if verdict is ACCEPT and no match was found, condition is *
+                 * not satisfiable; abort early                              */
+                if (!matched && (rule.verdict & VRD_ACCEPT))
+                    break;
+            }
+
+            /* if verdict is ACCEPT */
+            if (rule.verdict & VRD_ACCEPT) {
+                /* no matches means packet doesn't match rule; go to next one */
+                if (!matched)
+                    continue;
+
+                /* a match here means a match on every process; use verdict */
+                return VRD_ACCEPT;
+            }
+
+            /* if verdict is DROP and no matches were found, go to next rule */
+            continue;
+        }
+        /* aggregate hash check */
+        else if (rule.flags & FLT_SINGLE_HASH) {
+            /* TODO */
+            return NF_ACCEPT;
+        }
+    }
+
+    /* TODO: add default option configuration */
+    return NF_ACCEPT;
+}
+
 /* flt_handle_ctl - handles request by user's rule manager
  *  @us_csock_fd : unix connect socket
  *
@@ -77,7 +228,7 @@ _send_chain(int32_t us_dsock_fd, vector<struct flt_crit>& chain)
  *
  * TODO: add client authentication
  */
-int flt_handle_ctl(int32_t us_csock_fd)
+int32_t flt_handle_ctl(int32_t us_csock_fd)
 {
     vector<struct flt_crit>::iterator it;     /* iterator to certain element */
     vector<struct flt_crit>  *sel_chain;      /* pointer to selected chain   */

@@ -50,16 +50,6 @@ static unordered_map<uint8_t, char const * const> num2prot = {
  ************************** INTERNAL HELPER FUNCTIONS *************************
  ******************************************************************************/
 
-/* print_hexstring - prints a hexstring to stdout without newline
- *  @buff : pointer to buffer holding hexstring
- *  @len  : length of hexstring
- */
-void print_hexstring(const uint8_t *buff, size_t len)
-{
-    for (size_t i = 0; i < len; ++i)
-        printf("%02hhx", buff[i]);
-}
-
 /* print_header - prints header for rule table
  */
 void print_header()

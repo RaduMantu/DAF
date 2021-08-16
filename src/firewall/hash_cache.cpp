@@ -1,4 +1,3 @@
-#include <unordered_map>    /* unordered_map          */
 #include <stdio.h>          /* fopen, fclose, getline */
 #include <openssl/sha.h>    /* SHA256_*               */
 #include <fcntl.h>          /* open                   */
@@ -6,6 +5,9 @@
 #include <stdlib.h>         /* malloc                 */
 #include <sys/stat.h>       /* fstat                  */
 #include <sys/mman.h>       /* mmap, munmap           */
+
+#include <unordered_map>    /* unordered_map          */
+#include <unordered_set>    /* unordered_set          */
 
 #include "hash_cache.h"
 #include "util.h"
@@ -31,10 +33,10 @@ uint8_t no_rescan;      /* prevent rescanning maps if set is non-empty      */
  ********************************* PUBLIC API *********************************
  ******************************************************************************/
 
-int32_t               hc_init(uint8_t _rm, uint8_t _pm);
-uint8_t               *hc_get_sha256(char *path);
-unordered_set<string> hc_get_maps(uint32_t pid);
-void                  hc_proc_exit(uint32_t pid);
+int32_t     hc_init(uint8_t _rm, uint8_t _pm);
+uint8_t     *hc_get_sha256(char *path);
+set<string> hc_get_maps(uint32_t pid);
+void        hc_proc_exit(uint32_t pid);
 
 /******************************************************************************
  ************************** INTERNAL HELPER FUNCTIONS *************************
@@ -139,11 +141,11 @@ uint8_t *hc_get_sha256(char *path)
 /* hc_get_maps - returns set of maps with executable sections for given process
  *  @pid : target process id
  *  
- *  @return : set of paths to objects with .text section
+ *  @return : (ordered) set of paths to objects with .text section
  *
  *  NOTE: the set returned is a copy; caller can do whatever he wants with it
  */
-unordered_set<string> hc_get_maps(uint32_t pid)
+set<string> hc_get_maps(uint32_t pid)
 {
     FILE    *maps_f;            /* file stream for /proc/<pid>/maps        */
     char    *linebuf;           /* buffer for line-by-line read            */
@@ -162,7 +164,7 @@ unordered_set<string> hc_get_maps(uint32_t pid)
 
     /* if map rescanning is disabled and we have a non-empty set, return it */
     if (no_rescan && objs.size())
-        return objs;
+        goto create_ordered_set;
 
     /* create path to maps file */
     wb = snprintf(maps_path, sizeof(maps_path), "/proc/%hu/maps", pid);
@@ -172,7 +174,6 @@ unordered_set<string> hc_get_maps(uint32_t pid)
     maps_f     = fopen(maps_path, "r");
     linebuf    = (char *) malloc(512);
     linebuf_sz = 512;
-
 
     /* TODO: this method can cause segfaults if the process terminates
      *       early; try to replace with a single read() and tokenize string
@@ -201,7 +202,13 @@ unordered_set<string> hc_get_maps(uint32_t pid)
     free(linebuf);
     fclose(maps_f);
 
-    return objs;
+create_ordered_set:
+    /* copy the unordered set contents into an ordered one to maintain object *
+     * order across processes (even if they are scrambled)                    *
+     *                                                                        *
+     * TODO: convert objs to set<string> across entire module?                *
+     *       any performance cost? check this...                              */
+    return set(objs.begin(), objs.end());
 }
 
 /* hc_proc_exit - process exits; free associated maps set

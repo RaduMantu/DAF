@@ -1,9 +1,20 @@
-#include <string.h>     /* strchr             */
-#include <arpa/inet.h>  /* inet_pton, AF_INET */
-#include <netinet/in.h> /* IPPROTO_*          */
+#include <string.h>         /* strchr             */
+#include <stdlib.h>         /* realpath, malloc   */
+#include <fcntl.h>          /* open               */
+#include <unistd.h>         /* close, exit        */
+#include <sys/mman.h>       /* mmap, munmap       */
+#include <sys/stat.h>       /* stat               */
+#include <arpa/inet.h>      /* inet_pton, AF_INET */
+#include <netinet/in.h>     /* IPPROTO_*          */
+#include <openssl/sha.h>    /* SHA256_*           */
+
+#include <string>           /* string */
+#include <set>              /* set    */
 
 #include "controller_args.h"
 #include "util.h"
+
+using namespace std;
 
 /******************************************************************************
  ************************** PARSER ARGUMENTS CONFIG ***************************
@@ -25,10 +36,11 @@ enum {
 static struct argp_option options[] = {
     /* commands */
     { NULL, 0, NULL, 0, "Commands" },
-    { "list",   'L', NULL,  0, "List existing rules" },
-    { "append", 'A', NULL,  0, "Append rule at the end" },
-    { "insert", 'I', "NUM", 0, "Insert rule on position (0 is first)" },
-    { "delete", 'D', "NUM", 0, "Delete rule on position (0 is first)" },
+    { "list",       'L', NULL,   0, "List existing rules",                  0 },
+    { "append",     'A', NULL,   0, "Append rule at the end",               0 },
+    { "insert",     'I', "NUM",  0, "Insert rule on position (0 is first)", 0 },
+    { "delete",     'D', "NUM",  0, "Delete rule on position (0 is first)", 0 },
+    { "print-hash", 'H', "PATH", 0, "prints the SHA256 digest of a file",   10 }, 
 
     /* meta */
     { NULL, 0, NULL, 0, "Modifiers" },
@@ -69,6 +81,63 @@ struct ctl_msg cfg  = {
 /******************************************************************************
  ************************** INTERNAL HELPER FUNCTIONS *************************
  ******************************************************************************/
+
+/* _compute_sha256 - computes hash of file on disk
+ *  @path : (relative of absolute) path to file on disk 
+ *  @buff : message digest buffer (len = SHA256_DIGEST_LENGTH)
+ *
+ *  @return : 0 if everythin went well
+ */
+static int32_t _compute_sha256(char const *path, uint8_t *buff)
+{
+    SHA256_CTX  ctx;    /* sha256 context       */
+    int32_t     fd;     /* file descriptor      */
+    struct stat fs;     /* file stat buffer     */
+    uint8_t     *pa;    /* mmapped file address */
+    int32_t     ans;    /* answer               */
+    int32_t     ret;    /* return value         */
+
+    /* until hashing is complete, assume error */
+    ret = -1;
+
+    /* open target file */
+    fd = open(path, O_RDONLY);
+    RET(fd == -1, ret, "unable to open file (%s)", strerror(errno));
+
+    /* get file stats (interested only in its size) */
+    ans = fstat(fd, &fs);
+    GOTO(ans == -1, sha256_clean_fd, "unable to stat file (%s)",
+        strerror(errno)); 
+
+    /* map file in memory */
+    pa = (uint8_t *) mmap(NULL, fs.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    GOTO(pa == MAP_FAILED, sha256_clean_fd, "unable to map file (%s)",
+        strerror(errno));
+
+    /* calculate sha256 of given file */
+    ans = SHA256_Init(&ctx);
+    GOTO(!ans, sha256_clean_mmap, "unable to initalize context");
+
+    ans = SHA256_Update(&ctx, pa, fs.st_size);
+    GOTO(!ans, sha256_clean_mmap, "unable to update context");
+
+    ans = SHA256_Final(buff, &ctx);
+    GOTO(!ans, sha256_clean_mmap, "unable to finalize hashing");
+
+    /* hashing finalized normally */
+    ret = 0;
+
+    /* perform cleanup */
+sha256_clean_mmap:
+    ans = munmap(pa, fs.st_size);
+    ALERT(ans == -1, "problem unmapping files (%s)", strerror(errno));
+
+sha256_clean_fd:
+    ans = close(fd);
+    ALERT(ans == -1, "unable to close file (%s)", strerror(errno));
+
+    return ret;
+}
 
 /* isnumber() can be defined in <ctypes.h> on 4.4BSD and beyond */
 #ifndef isnumber
@@ -214,6 +283,16 @@ read_hexstring(char *str_buff, uint8_t *bin_buff, size_t buff_len)
  ************************** PUBLIC API IMPLEMENTATION ************************* 
  ******************************************************************************/
 
+/* print_hexstring - prints a hexstring to stdout without newline
+ *  @buff : pointer to buffer holding hexstring
+ *  @len  : length of hexstring
+ */
+void print_hexstring(const uint8_t *buff, size_t len)
+{
+    for (size_t i = 0; i < len; ++i)
+        printf("%02hhx", buff[i]);
+}
+
 /* parse_opt - parses one argument and updates relevant structures 
  *  @key   : argument id
  *  @arg   : pointer to actual argument
@@ -223,19 +302,26 @@ read_hexstring(char *str_buff, uint8_t *bin_buff, size_t buff_len)
  */
 static error_t parse_opt(int key, char *arg, struct argp_state *state)
 {
-    static uint16_t invert = 0;     /* used when processing "-!"        */
-    int64_t         number;         /* store (possibly negative) number */
-    int32_t         ans;            /* answer                           */
+    static uint16_t    invert = 0;      /* used when processing "-!"        */
+    static set<string> paths;           /* ordered set of paths             */
+    char               path[PATH_MAX];  /* real path buffer                 */
+    char               *path_p;         /* return value from realpath       */
+    int64_t            number;          /* store (possibly negative) number */
+    int32_t            ans;             /* answer                           */
+    uint8_t            md_single[SHA256_DIGEST_LENGTH];
+    uint8_t            md_aggregate[SHA256_DIGEST_LENGTH];
 
     switch (key) {
         /* list existing rules */
         case 'L':
+            RET(cfg.msg.flags & CTL_HASH, EINVAL, "-L and -H not compatible");
             RET(cfg.msg.flags & CTL_REQ_MASK, EINVAL, "too many commands");
 
             cfg.msg.flags |= CTL_LIST;
             break;
         /* append rule */
         case 'A':
+            RET(cfg.msg.flags & CTL_HASH, EINVAL, "-A and -H not compatible");
             RET(cfg.msg.flags & CTL_REQ_MASK, EINVAL, "too many commands");
             RET((cfg.msg.flags & CTL_INPUT)
              && (cfg.msg.flags & CTL_OUTPUT),
@@ -246,6 +332,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             break;
         /* insert rule */
         case 'I':
+            RET(cfg.msg.flags & CTL_HASH, EINVAL, "-I and -H not compatible");
             RET(cfg.msg.flags & CTL_REQ_MASK, EINVAL, "too many commands");
             RET(!isnumber(arg), EINVAL, "insert position is not numeric");
             RET((cfg.msg.flags & CTL_INPUT)
@@ -262,6 +349,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             break;
         /* delete rule */
         case 'D':
+            RET(cfg.msg.flags & CTL_HASH, EINVAL, "-D and -H not compatible");
             RET(cfg.msg.flags & CTL_REQ_MASK, EINVAL, "too many commands");
             RET(!isnumber(arg), EINVAL, "delete position is not numeric");
             RET((cfg.msg.flags & CTL_INPUT)
@@ -275,6 +363,21 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 
             cfg.msg.flags |= CTL_DELETE;
             cfg.msg.pos    = number;
+            break;
+        /* get hash of file */
+        case 'H':
+            RET(cfg.msg.flags & CTL_REQ_MASK, EINVAL,
+                "-H not compatible with firewall requests");
+            cfg.msg.flags |= CTL_HASH;
+
+            /* obtain real path from (possibly) relative */
+            path_p = realpath(arg, path);
+            RET(!path_p, EINVAL, "failed to resolve path %s (%s)", arg,
+                strerror(errno));
+
+            /* add path to set for later in-order hashing */
+            paths.insert(string(path));
+
             break;
         /* source ip addr */
         case 's':
@@ -451,6 +554,27 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             break;
         /* this is invoked after all arguments have been parsed */
         case ARGP_KEY_END:
+            /* first, treat commands that can be handled locally */
+            if (cfg.msg.flags & CTL_HASH) {
+                /* for each path specified via -H */
+                for (auto& pit : paths) {
+                    ans = _compute_sha256(pit.c_str(), md_single); 
+                    RET(ans, ans, "unable to calculate sha256 of %s",
+                        pit.c_str());
+
+                    /* print hash of file */
+                    printf("%-36s -- ", pit.c_str());
+                    print_hexstring(md_single, sizeof(md_single));
+                    printf("\n");
+
+                    /* TODO: update context of aggregate hash with md_single */
+                }
+
+                /* mothing more to do; exit normally */
+                exit(0);
+            }
+
+            /* from here, we sanitize requests for the firewall */
             RET(!(cfg.msg.flags & CTL_REQ_MASK), EINVAL,
                 "no command specified");     
             RET((cfg.msg.flags & (CTL_APPEND | CTL_INSERT)) 

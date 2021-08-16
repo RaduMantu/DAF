@@ -8,7 +8,7 @@ INC = include
 
 # compilation related parameters
 CXX      = g++
-CXXFLAGS = -std=c++20
+CXXFLAGS = -std=c++20 -ggdb
 LDFLAGS  = -lnetfilter_queue -lbpf -lprocps -lcrypto
 
 CLANG      = clang

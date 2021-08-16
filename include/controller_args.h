@@ -9,5 +9,7 @@
 extern struct argp    argp;
 extern struct ctl_msg cfg;
 
+void print_hexstring(const uint8_t *buff, size_t len);
+
 #endif
 

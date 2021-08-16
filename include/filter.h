@@ -1,7 +1,13 @@
-#include <stdint.h>
+#include <stdint.h> /* [u]int*_t */
+
+#include <vector>   /* vector */
 
 #ifndef _FILTER_H
 #define _FILTER_H
+
+/******************************************************************************
+ ************************** MATCH RULE SPECIFICATION **************************
+ ******************************************************************************/
 
 /* match rule flags (16b) */
 enum {
@@ -53,13 +59,20 @@ struct flt_crit {
     uint8_t reserved[6];
 };
 
+/******************************************************************************
+ ***************** COMMUNICATION WITH RULE MANAGER COMPANION ******************
+ ******************************************************************************/
+
 /* controller communication flags (16b) */
 enum {
-    /* requests */
+    /* commands for firewall */
     CTL_LIST      = 1 <<  0,    /* list existing rules           */
     CTL_INSERT    = 1 <<  1,    /* insert rule at given position */
     CTL_APPEND    = 1 <<  2,    /* insert rule at end of chain   */
     CTL_DELETE    = 1 <<  3,    /* delete rule at given position */
+
+    /* commands that companion app can handle itself */
+    CTL_HASH      = 1 <<  4,    /* show hash of object(s)        */
 
     /* affected chains */
     CTL_INPUT     = 1 << 10,    /* affects INPUT chain  */
@@ -89,8 +102,20 @@ struct ctl_msg {
     struct flt_crit rule;   /* filtering rule (optional)    */
 };
 
-/* public API */
-int flt_handle_ctl(int32_t us_csock_fd);
+/******************************************************************************
+ ************************ NETFILTER QUEUE INTERACTION *************************
+ ******************************************************************************/
+
+#define INPUT_CHAIN  0
+#define OUTPUT_CHAIN 1 
+
+/******************************************************************************
+ ********************************* PUBLIC API *********************************
+ ******************************************************************************/
+
+uint32_t get_verdict(void *pkt, std::vector<std::vector<uint8_t *>>& maps,
+            uint32_t chain);
+int32_t  flt_handle_ctl(int32_t us_csock_fd);
 
 #endif
 

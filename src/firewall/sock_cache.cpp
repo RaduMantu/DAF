@@ -479,6 +479,7 @@ void sc_dump_state(void)
  *  @dst_port : network order destination port (can be 0)
  *
  *  @return : pointer to set of pids that have access to given port
+ *            or NULL on error or no match found
  *
  * arguments that can be 0 are used to filter entries in netlink socket
  * diagnostics request. only src_port will be used when mapping the inode in

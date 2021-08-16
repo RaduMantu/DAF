@@ -3,13 +3,15 @@
 #include <netinet/tcp.h>    /* tcphdr        */
 #include <netinet/udp.h>    /* udphdr        */
 
-#include <unordered_set>    /* unordered_set */
+#include <set>              /* set           */
+#include <vector>           /* vector        */
 
 #include "netlink_helpers.h"
 #include "ebpf_helpers.h"
 #include "sock_cache.h"
 #include "hash_cache.h"
 #include "nfq_helpers.h"
+#include "filter.h"
 #include "util.h"
 
 using namespace std;
@@ -36,7 +38,10 @@ int nfq_handler(struct nfq_q_handle *qh,
     int32_t                     ans;        /* answer                     */
     uint16_t                    src_port;   /* network order src port     */
     uint16_t                    dst_port;   /* network order dst port     */
+    uint32_t                    verdict;    /* nfq verdict                */
     unordered_set<uint32_t>     *pid_set_p; /* pointer to set of pids     */
+    vector<vector<uint8_t *>>   hashes;     /* per process ordered hashes */
+    size_t                      pid_idx;    /* index of analyzed pid      */
 
     /* cast reference to nfq operational parameters */
     nfq_opp = (struct nfq_op_param *) data;
@@ -67,22 +72,8 @@ int nfq_handler(struct nfq_q_handle *qh,
 
             break;
         default:
-            goto pass_unchanged;
+            goto output_pass_unchanged;
     }
-
-    /* just debug info */
-    DEBUG("packet | "
-          "src_ip:%hhu.%hhu.%hhu.%hhu "
-          "dst_ip:%hhu.%hhu.%hhu.%hhu "
-          "proto: %s "
-          "src_port:%hu "
-          "dst_port:%hu ",
-          (iph->saddr >>  0) & 0xff, (iph->saddr >>  8) & 0xff,
-          (iph->saddr >> 16) & 0xff, (iph->saddr >> 24) & 0xff,
-          (iph->daddr >>  0) & 0xff, (iph->daddr >>  8) & 0xff,
-          (iph->daddr >> 16) & 0xff, (iph->daddr >> 24) & 0xff,
-          iph->protocol == IPPROTO_TCP ? "TCP" : "UDP",
-          ntohs(src_port), ntohs(dst_port));
 
     /* process any delayed events that have timed out */
     nl_delayed_ev_handle(nfq_opp->proc_delay);
@@ -91,27 +82,40 @@ int nfq_handler(struct nfq_q_handle *qh,
     /* find pids that have access to this src port */
     pid_set_p = sc_get_pid(iph->protocol, iph->saddr, iph->daddr, src_port,
                     dst_port);
-    GOTO(!pid_set_p, pass_unchanged, "unable to find pid set for packet");
+    if (!pid_set_p)
+        goto map_fetch_bypass;
 
-    /* more debug info */
+    /* resize vector of md vectors based on number of processes */
+    hashes.resize(pid_set_p->size());
+
+    /* get mapped objects from pids and hashes from objects */
+    pid_idx = 0;
     for (auto pid_it : *pid_set_p) {
-        printf(">>> pid: %u\n", pid_it);
-        
         auto maps = hc_get_maps(pid_it);
+
         for (auto& map_it : maps) {
+            /* get sha256 digest of object                              *
+             * NOTE: unlikely to fail; if it does, drop packet probably *
+             *       something fishy going on                           */
             uint8_t *md = hc_get_sha256((char *) map_it.c_str());
+            GOTO(!md, output_drop, "could not get sha256 digest of %s",
+                map_it.c_str());
 
-            printf(" >> %45s -- ", map_it.c_str());
-            for (size_t i=0; i<32; ++i)
-                printf("%02hhx", md[i]);
-            printf("\n");
+            /* location in memory of hash should never change */
+            hashes[pid_idx].push_back(md);
         }
-    }
+    } 
 
-    /* pass unchanged */
-pass_unchanged:
+map_fetch_bypass:
+    /* get verdict for current packet */
+    verdict = get_verdict((void *) iph, hashes, OUTPUT_CHAIN);
+    DEBUG("Got a match --> %s", verdict == NF_DROP ? "DROP" : "ACCEPT");
+    return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
+
+    /* TODO: rewrite these out (maybe) */
+output_pass_unchanged:
     return nfq_set_verdict(qh, ntohl(ph->packet_id), NF_ACCEPT, 0, NULL);
-drop:
+output_drop:
     return nfq_set_verdict(qh, ntohl(ph->packet_id), NF_DROP, 0, NULL);
 }
 
