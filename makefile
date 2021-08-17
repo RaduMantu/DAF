@@ -1,5 +1,3 @@
-.PHONY: dirs
-
 # important directories
 SRC = src
 BIN = bin
@@ -29,32 +27,36 @@ OBJECTS_CTL = $(patsubst $(SRC)/controller/%.cpp, $(OBJ)/%.o, $(SOURCES_CTL))
 SOURCES_BPF = $(wildcard $(SRC)/kern/*.c)
 OBJECTS_BPF = $(patsubst $(SRC)/kern/%.c, $(BIN)/%.o, $(SOURCES_BPF))
 
-# top level rule
-build: dirs $(BIN)/app-fw $(BIN)/ctl-fw $(OBJECTS_BPF)
+# directive to prevent (attempted) intermediary file/directory deletion
+.PRECIOUS: $(BIN)/ $(OBJ)/
 
-# non-persistent folder creation rule
-dirs:
-	@mkdir -p $(BIN) $(OBJ)
+# top level rule (specifies final binaries)
+build: $(BIN)/app-fw $(BIN)/ctl-fw $(OBJECTS_BPF)
+
+# non-persistent directory creation rule
+%/:
+	@mkdir -p $@
 
 # final binary generation rules
-$(BIN)/app-fw: $(OBJECTS_FW)
-	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+$(BIN)/app-fw: $(OBJECTS_FW) | $(BIN)/
+	$(CXX) -o $@ $^ $(LDFLAGS)
 
-$(BIN)/ctl-fw: $(OBJECTS_CTL)
-	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+$(BIN)/ctl-fw: $(OBJECTS_CTL) | $(BIN)/
+	$(CXX) -o $@ $^ $(LDFLAGS)
 
 # object generation rules
-$(OBJ)/%.o: $(SRC)/firewall/%.cpp
+$(OBJ)/%.o: $(SRC)/firewall/%.cpp | $(OBJ)/
 	$(CXX) -c -I $(INC) $(CXXFLAGS) -o $@ $<
 
-$(OBJ)/%.o: $(SRC)/controller/%.cpp
+$(OBJ)/%.o: $(SRC)/controller/%.cpp | $(OBJ)/
 	$(CXX) -c -I $(INC) $(CXXFLAGS) -o $@ $<
 
 # eBPF object generation rule
-$(BIN)/%.o: $(SRC)/kern/%.c
+$(BIN)/%.o: $(SRC)/kern/%.c | $(BIN)/
 	$(CLANG) $(CLANGFLAGS) -I $(INC) -c -o - $< | $(LLC) $(LLCFLAGS) -o $@
 
 # clean rule
 clean:
 	@rm -rf $(BIN) $(OBJ)
+
 
