@@ -116,10 +116,10 @@ static int32_t _compute_sha256(char const *path, uint8_t *buff)
 
     /* calculate sha256 of given file */
     ans = SHA256_Init(&ctx);
-    GOTO(!ans, sha256_clean_mmap, "unable to initalize context");
+    GOTO(!ans, sha256_clean_mmap, "unable to initalize sha256 context");
 
     ans = SHA256_Update(&ctx, pa, fs.st_size);
-    GOTO(!ans, sha256_clean_mmap, "unable to update context");
+    GOTO(!ans, sha256_clean_mmap, "unable to update sha256 context");
 
     ans = SHA256_Final(buff, &ctx);
     GOTO(!ans, sha256_clean_mmap, "unable to finalize hashing");
@@ -139,14 +139,58 @@ sha256_clean_fd:
     return ret;
 }
 
-/* isnumber() can be defined in <ctypes.h> on 4.4BSD and beyond */
-#ifndef isnumber
-/* isnumber - checks if string is numeric
+/* _display_hashes - processes all -H arguments and prints aggregate hash too
+ *  @paths : ordered set of file absolute paths
+ *
+ *  @return : 0 if everything went well
+ */
+static int32_t _display_hashes(set<string>& paths)
+{
+    uint8_t    md_single[SHA256_DIGEST_LENGTH];
+    uint8_t    md_aggregate[SHA256_DIGEST_LENGTH];
+    SHA256_CTX ctx;     /* sha256 context */
+    int32_t    ans;
+
+    /* prepare sha256 context for aggregate hash */
+    ans = SHA256_Init(&ctx);
+    RET(!ans, -1, "unable to initialize sha256 context");
+
+    /* for each absolute path (in order!) */
+    for (auto& path_it : paths) {
+        /* compute sha256 of file */
+        ans = _compute_sha256(path_it.c_str(), md_single);
+        RET(ans, -1, "unable to calculate sha256 of %s", path_it.c_str());
+
+        /* print single hash entry */
+        printf("%-52s -- ", path_it.c_str());
+        print_hexstring(md_single, sizeof(md_single));
+        printf("\n");
+
+        /* update aggregate hash */
+        ans = SHA256_Update(&ctx, md_single, sizeof(md_single));
+        RET(!ans, -1, "unable to update sha256 context");
+    }
+
+    /* finalize aggregate hash calculation */
+    ans = SHA256_Final(md_aggregate, &ctx);
+    RET(!ans, -1, "unable to finalize hashing");
+
+    /* print aggregate hash */
+    printf("============================================================"
+           "============================================================"
+           "\n%-52s -- ", "AGGREGATE HASH");
+    print_hexstring(md_aggregate, sizeof(md_aggregate));
+    printf("\n");
+
+    return 0;
+}
+
+/* _isnumber - checks if string is numeric
  *  @s : string
  *
  *  @return : 1 if the string represents a number; 0 otherwise
  */
-static int32_t isnumber(char *s)
+static int32_t _isnumber(char *s)
 {
     /* null string is not a number */
     if (!*s)
@@ -158,9 +202,8 @@ static int32_t isnumber(char *s)
 
     return 1;
 }
-#endif /*isnumber */
 
-/* parse_cidr_addr - extracts IP and mask in network order from CIDR string
+/* _parse_cidr_addr - extracts IP and mask in network order from CIDR string
  *  @str  : CIDR string
  *  @addr : ptr to network order address
  *  @mask : ptr to network order mask
@@ -169,7 +212,7 @@ static int32_t isnumber(char *s)
  *
  * NOTE: contents of str may be changed by this function
  */
-static int32_t parse_cidr_addr(char *str, uint32_t *addr, uint32_t *mask)
+static int32_t _parse_cidr_addr(char *str, uint32_t *addr, uint32_t *mask)
 {
     char    *nm;    /* pointer to network mask in string */
     uint8_t prefix; /* network prefix in CIDR notation   */
@@ -182,7 +225,7 @@ static int32_t parse_cidr_addr(char *str, uint32_t *addr, uint32_t *mask)
         *nm++ = '\0';
 
         /* extract network mask number from arg string */
-        RET(!isnumber(nm), EINVAL, "invalid network mask");
+        RET(!_isnumber(nm), EINVAL, "invalid network mask");
         sscanf(nm, "%lu", &prefix);
         RET(prefix < 0 || prefix > 32, EINVAL, "invalid network mask");
     } 
@@ -208,18 +251,18 @@ static int32_t parse_cidr_addr(char *str, uint32_t *addr, uint32_t *mask)
     return 0;
 }
 
-/* parse_port_num - extracts port number in network order from string
+/* _parse_port_num - extracts port number in network order from string
  *  @str  : numeric string
  *  @port : ptr to network order port number
  *
  *  @return : 0 if everything went well
  */
-static int32_t parse_port_num(char *str, uint16_t *port)
+static int32_t _parse_port_num(char *str, uint16_t *port)
 {
     int64_t number;     /* store (posssibly negative) number */
 
     /* sanity check */
-    RET(!isnumber(str), EINVAL, "invalid port number");
+    RET(!_isnumber(str), EINVAL, "invalid port number");
 
     sscanf(str, "%ld", &number);
     RET(number < 0, EINVAL, "invalid port number");
@@ -230,19 +273,19 @@ static int32_t parse_port_num(char *str, uint16_t *port)
     return 0;
 }
 
-/* is_hexfmt - checks if character represents a b16 representation of a nibble
+/* _is_hexfmt - checks if character represents a b16 representation of a nibble
  *  @c : character
  *
  *  @return : 1 if character is valid, 0 otherwise
  */
-static int32_t is_hexfmt(char c)
+static int32_t _is_hexfmt(char c)
 {
     return (c >= '0' && c <= '9')
         || (c >= 'A' && c <= 'F')
         || (c >= 'a' && c <= 'f');
 }
 
-/* read_hexstring - reads a hexstring from a char array into a buffer
+/* _read_hexstring - reads a hexstring from a char array into a buffer
  *  @str_buff : source string buffer
  *  @bin_buff : destination binary buffer
  *  @buff_len : length of string
@@ -255,7 +298,7 @@ static int32_t is_hexfmt(char c)
  *  byte is 0.
  */
 static int32_t
-read_hexstring(char *str_buff, uint8_t *bin_buff, size_t buff_len)
+_read_hexstring(char *str_buff, uint8_t *bin_buff, size_t buff_len)
 {
 
     /* check that hexstring length is even */
@@ -269,7 +312,7 @@ read_hexstring(char *str_buff, uint8_t *bin_buff, size_t buff_len)
     /* iterate over hexstring */
     for (size_t i = 0; i < str_len; i += 2) {
         /* check that byte hexstring format is correct */
-        RET(!is_hexfmt(str_buff[i]) || !is_hexfmt(str_buff[i+1]), EINVAL,
+        RET(!_is_hexfmt(str_buff[i]) || !_is_hexfmt(str_buff[i+1]), EINVAL,
             "invalid hexstring format");
 
         /* convert string to binary */
@@ -297,7 +340,7 @@ void print_hexstring(const uint8_t *buff, size_t len)
  *  @key   : argument id
  *  @arg   : pointer to actual argument
  *  @state : parsing state
- *
+
  *  @return : 0 if everything ok
  */
 static error_t parse_opt(int key, char *arg, struct argp_state *state)
@@ -308,8 +351,6 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
     char               *path_p;         /* return value from realpath       */
     int64_t            number;          /* store (possibly negative) number */
     int32_t            ans;             /* answer                           */
-    uint8_t            md_single[SHA256_DIGEST_LENGTH];
-    uint8_t            md_aggregate[SHA256_DIGEST_LENGTH];
 
     switch (key) {
         /* list existing rules */
@@ -334,7 +375,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         case 'I':
             RET(cfg.msg.flags & CTL_HASH, EINVAL, "-I and -H not compatible");
             RET(cfg.msg.flags & CTL_REQ_MASK, EINVAL, "too many commands");
-            RET(!isnumber(arg), EINVAL, "insert position is not numeric");
+            RET(!_isnumber(arg), EINVAL, "insert position is not numeric");
             RET((cfg.msg.flags & CTL_INPUT)
              && (cfg.msg.flags & CTL_OUTPUT),
              EINVAL,
@@ -351,7 +392,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         case 'D':
             RET(cfg.msg.flags & CTL_HASH, EINVAL, "-D and -H not compatible");
             RET(cfg.msg.flags & CTL_REQ_MASK, EINVAL, "too many commands");
-            RET(!isnumber(arg), EINVAL, "delete position is not numeric");
+            RET(!_isnumber(arg), EINVAL, "delete position is not numeric");
             RET((cfg.msg.flags & CTL_INPUT)
              && (cfg.msg.flags & CTL_OUTPUT),
              EINVAL,
@@ -391,7 +432,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             }
 
             /* parse CIDR address */
-            ans = parse_cidr_addr(arg, &cfg.rule.src_ip, &cfg.rule.src_ip_mask);
+            ans = _parse_cidr_addr(arg, &cfg.rule.src_ip, &cfg.rule.src_ip_mask);
             RET(ans, ans, "failed to parse CIDR address");
 
             break;
@@ -407,7 +448,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             }
            
             /* parse CIDR address */
-            ans = parse_cidr_addr(arg, &cfg.rule.dst_ip, &cfg.rule.dst_ip_mask);
+            ans = _parse_cidr_addr(arg, &cfg.rule.dst_ip, &cfg.rule.dst_ip_mask);
             RET(ans, ans, "failed to parse CIDR address");
 
             break;
@@ -423,7 +464,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             }
 
             /* protocol given in numeric format */
-            if (isnumber(arg)) {
+            if (_isnumber(arg)) {
                 sscanf(arg, "%ld", &number);
                 RET(number < 0, EINVAL, "l4 protocol can not be negative");
 
@@ -455,7 +496,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             }
 
             /* parse port number */
-            ans = parse_port_num(arg, &cfg.rule.src_port);
+            ans = _parse_port_num(arg, &cfg.rule.src_port);
             RET(ans, ans, "failed to parse source port number");
            
             break;
@@ -472,7 +513,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             }
 
             /* parse port number */
-            ans = parse_port_num(arg, &cfg.rule.dst_port);
+            ans = _parse_port_num(arg, &cfg.rule.dst_port);
             RET(ans, ans, "failed to parse destination port number");
            
             break;
@@ -488,7 +529,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             }
 
             /* parse hexstring as sha256 md */
-            ans = read_hexstring(arg, cfg.rule.sha256_md,
+            ans = _read_hexstring(arg, cfg.rule.sha256_md,
                     sizeof(cfg.rule.sha256_md));
             RET(ans, ans, "failed to parse hexstring");
 
@@ -505,7 +546,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             }
 
             /* parse hexstring as sha256 md */
-            ans = read_hexstring(arg, cfg.rule.sha256_md,
+            ans = _read_hexstring(arg, cfg.rule.sha256_md,
                     sizeof(cfg.rule.sha256_md));
             RET(ans, ans, "failed to parse hexstring");
 
@@ -556,21 +597,10 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         case ARGP_KEY_END:
             /* first, treat commands that can be handled locally */
             if (cfg.msg.flags & CTL_HASH) {
-                /* for each path specified via -H */
-                for (auto& pit : paths) {
-                    ans = _compute_sha256(pit.c_str(), md_single); 
-                    RET(ans, ans, "unable to calculate sha256 of %s",
-                        pit.c_str());
+                ans = _display_hashes(paths);
+                DIE(ans, "unable to display requested hashes");
 
-                    /* print hash of file */
-                    printf("%-36s -- ", pit.c_str());
-                    print_hexstring(md_single, sizeof(md_single));
-                    printf("\n");
-
-                    /* TODO: update context of aggregate hash with md_single */
-                }
-
-                /* mothing more to do; exit normally */
+                /* mothing more to do */
                 exit(0);
             }
 
