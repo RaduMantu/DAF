@@ -1,9 +1,10 @@
 #include <unistd.h>             /* read, close      */
 #include <sys/socket.h>         /* accept           */
 #include <sys/uio.h>            /* writev           */
-#include <netinet/ip.h>
+#include <netinet/ip.h>         /* iphdr            */
 #include <netinet/udp.h>        /* udphdr           */
 #include <netinet/tcp.h>        /* tcphdr           */
+#include <linux/netfilter.h>    /* NF_MAX_VERDICT   */
 
 #include <unordered_set>        /* unordered set */
 #include <iterator>             /* advance       */
@@ -21,16 +22,6 @@ using namespace std;
 
 static vector<struct flt_crit> input_chain;
 static vector<struct flt_crit> output_chain;
-
-/* define these separately; errors if including *
- * <linux/netfilter.h> and <netinet/ip.h>       */
-#ifndef NF_DROP
-#define NF_DROP   0
-#endif
-
-#ifndef NF_ACCEPT
-#define NF_ACCEPT 1
-#endif
 
 /******************************************************************************
  ************************** INTERNAL HELPER FUNCTIONS *************************
@@ -86,7 +77,11 @@ _send_chain(int32_t us_dsock_fd, vector<struct flt_crit>& chain)
  *  @maps   : vector of hashes for memory mapped objects, for each process
  *  @chain  : {INPUT,OUTPUT}_CHAIN (see filter.h)
  *
- *  @return : NF_{ACCEPT,DROP}
+ *  @return : NF_{ACCEPT,DROP} if packet matched a rule
+ *            NF_MAX_VERDICT + 1 if packet did not match any rule
+ *
+ *  Returning NF_MAX_VERDICT + 1 will eventually lead to the chain's default
+ *  rule being applied.
  */
 uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
 {
@@ -102,8 +97,8 @@ uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
     else if (chain == OUTPUT_CHAIN)
         sel_chain = &output_chain;
     else {
-        WAR("incorrect chain specified; aborting with NF_ACCEPT");
-        return NF_ACCEPT;
+        WAR("invalid chain identifier");
+        return NF_MAX_VERDICT + 1;
     }
 
     /* cast packet buffer to iphdr */
@@ -214,8 +209,8 @@ uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
         }
     }
 
-    /* TODO: add default option configuration */
-    return NF_ACCEPT;
+    /* no rule was matched; fall back to chain default policy */
+    return NF_MAX_VERDICT + 1;
 }
 
 /* flt_handle_ctl - handles request by user's rule manager

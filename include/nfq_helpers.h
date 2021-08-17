@@ -1,3 +1,4 @@
+#include <stdint.h>             /* [u]int*_t */
 #include <linux/netfilter.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
 
@@ -10,14 +11,14 @@ struct nfq_op_param {
 };
 
 
-int nfq_out_handler(struct nfq_q_handle *qh,
-                    struct nfgenmsg     *nfmsg,
-                    struct nfq_data     *nfd,
-                    void                *data);
-int nfq_in_handler(struct nfq_q_handle *qh,
-                   struct nfgenmsg     *nfmsg,
-                   struct nfq_data     *nfd,
-                   void                *data);
+int32_t nfq_out_handler(struct nfq_q_handle *qh,
+                        struct nfgenmsg     *nfmsg,
+                        struct nfq_data     *nfd,
+                        void                *data);
+int32_t nfq_in_handler(struct nfq_q_handle *qh,
+                       struct nfgenmsg     *nfmsg,
+                       struct nfq_data     *nfd,
+                       void                *data);
 
-#endif
+#endif /* _NFQ_HELPERS_H */
 
