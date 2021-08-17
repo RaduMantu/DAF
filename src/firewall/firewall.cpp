@@ -153,10 +153,22 @@ int main(int argc, char *argv[])
     /* set netfilter queue operational parameters */
     nfq_opp.proc_delay = cfg.proc_delay;
 
+    /* open input netfilter queue handle */
+    nf_handle_in = nfq_open();
+    GOTO(!nf_handle_in, clean_bpf_rb,
+        "unable to open input nfq handle (%s)", strerror(errno));
+    INFO("opened input nfq handle");
+
+    /* bind nfq input handler to queue */
+    nfq_handle_in = nfq_create_queue(nf_handle_in, cfg.queue_num_in,
+                        nfq_in_handler, &nfq_opp);
+    GOTO(!nfq_handle_in, clean_nf_handle_in);
+    INFO("bound to netfilter queue: %d", cfg.queue_num_in);
+
     /* open output netfilter queue handle */
     nf_handle_out = nfq_open();
-    GOTO(!nf_handle_out, clean_bpf_rb, "unable to open output nfq handle (%s)",
-        strerror(errno));
+    GOTO(!nf_handle_out, clean_nf_queue_in,
+        "unable to open output nfq handle (%s)", strerror(errno));
     INFO("opened output nfq handle");
 
     /* bind nfq output handler to queue */
@@ -164,15 +176,24 @@ int main(int argc, char *argv[])
                         nfq_out_handler, &nfq_opp);
     GOTO(!nfq_handle_out, clean_nf_handle_out,
         "unable to bind to output nfqueue (%s)", strerror(errno));
-    INFO("bound to netfilter queue: %d", 0);
+    INFO("bound to netfilter queue: %d", cfg.queue_num_out);
 
     /* set amount of data to be copied to userspace (max ip packet size) */
+    ans = nfq_set_mode(nfq_handle_in, NFQNL_COPY_PACKET, sizeof(pkt_buff));
+    GOTO(ans < 0, clean_nf_handle_in, "unable to set input nfq mode (%s)",
+        strerror(errno));
+    INFO("configured nfq input packet handling parameters");
+
     ans = nfq_set_mode(nfq_handle_out, NFQNL_COPY_PACKET, sizeof(pkt_buff));
     GOTO(ans < 0, clean_nf_handle_out, "unable to set output nfq mode (%s)",
         strerror(errno));
     INFO("configured nfq output packet handling parameters");
 
-    /* obtain fd of queue handle's associated socket */
+    /* obtain fd of input queue handle's associated socket */
+    nfqueue_fd_in = nfq_fd(nf_handle_in);
+    INFO("obtained file descriptor of associated nfq output socket");
+
+    /* obtain fd of output queue handle's associated socket */
     nfqueue_fd_out = nfq_fd(nf_handle_out);
     INFO("obtained file descriptor of associated nfq output socket");
 
@@ -228,6 +249,16 @@ int main(int argc, char *argv[])
     GOTO(ans == -1, clean_epoll_fd_p1,
         "failed to add eBPF ringbuffer to epoll monitor (%s)", strerror(errno));
     INFO("eBPF ringbuffer added to epoll-p0 monitor");
+
+    /* add input netfilter queue to epoll watchlist (bottom prio) */
+    epoll_ev[0].data.fd = nfqueue_fd_in;
+    epoll_ev[0].events  = EPOLLIN;
+
+    ans = epoll_ctl(epoll_p1_fd, EPOLL_CTL_ADD, nfqueue_fd_in, &epoll_ev[0]);
+    GOTO(ans == -1, clean_epoll_fd_p1,
+        "failed to add netfilter input queue to epoll-p1 monitor (%s)",
+        strerror(errno));
+    INFO("netfilter input queue added to epoll monitor");
 
     /* add output netfilter queue to epoll watchlist (bottom prio) */
     epoll_ev[0].data.fd = nfqueue_fd_out;
@@ -325,6 +356,12 @@ int main(int argc, char *argv[])
                 strerror(errno));
 
             nfq_handle_packet(nf_handle_out, (char *) pkt_buff, rb); 
+        } else if (epoll_ev[0].data.fd == nfqueue_fd_in) { 
+            rb = read(nfqueue_fd_in, pkt_buff, sizeof(pkt_buff));
+            CONT(rb == -1, "failed to read packet from nf queue (%s)",
+                strerror(errno));
+
+            nfq_handle_packet(nf_handle_in, (char *) pkt_buff, rb);
         } else if (epoll_ev[0].data.fd == STDIN_FILENO) {
             rb = read(STDIN_FILENO, usr_input, sizeof(usr_input));
             CONT(rb == -1, "failed to read stdin input (%s)", strerror(errno));
@@ -367,12 +404,21 @@ clean_epoll_fd:
 
 clean_nf_queue_out:
     nfq_destroy_queue(nfq_handle_out);
-    INFO("destroyed netfilter queue");
+    INFO("destroyed netfilter output queue");
 
 clean_nf_handle_out:
     ans = nfq_close(nf_handle_out);
-    ALERT(ans, "failed to close nfq handle");
-    INFO("closed nfq handle");
+    ALERT(ans, "failed to close nfq output handle");
+    INFO("closed nfq output handle");
+
+clean_nf_queue_in:
+    nfq_destroy_queue(nfq_handle_in);
+    INFO("destroyed netfilter input queue");
+
+clean_nf_handle_in:
+    ans = nfq_close(nf_handle_in);
+    ALERT(ans, "failed to close nfq input handle");
+    INFO("closed nfq output handle");
 
 clean_bpf_rb:
     /* free eBPF ringbuffer */

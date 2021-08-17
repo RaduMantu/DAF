@@ -42,9 +42,8 @@ static error_t parse_opt(int, char *, struct argp_state *);
 static char args_doc[] = "";
 
 /* program documentation */
-static char doc[] = "app-fw -- network traffic filter that verifies identity "
-                    "of processes having\n          access to transmitting "
-                    "/ receiving sockets";
+static char doc[] = "Network traffic filter that verifies identity of processes"
+                    " having access to transmitting / receiving sockets";
 
 /* declaration of relevant structures */
 struct argp   argp = { options, parse_opt, args_doc, doc };

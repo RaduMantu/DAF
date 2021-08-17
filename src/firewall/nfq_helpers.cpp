@@ -16,8 +16,56 @@
 
 using namespace std;
 
+/******************************************************************************
+ ************************** INTERNAL HELPER FUNCTIONS *************************
+ ******************************************************************************/
 
-/* nfq_out_handler - output callback routine for NetfilterQueue
+
+/******************************************************************************
+ ************************** PUBLIC API IMPLEMENTATION *************************
+ ******************************************************************************/
+
+/* nfq_in_handler - input chain callback routine for NetfilterQueue
+ *  @qh    : netfilter queue handle
+ *  @nfmsg : general form of address family dependent message
+ *  @nfd   : nfq related data for packet evaluation
+ *  @data  : data parameter passed unchanged by nfq_create_queue()
+ *
+ *  @return : 0 if ok, -1 on error (handled by nfq_set_verdict())
+ */
+int nfq_in_handler(struct nfq_q_handle *qh,
+                   struct nfgenmsg     *nfmsg,
+                   struct nfq_data     *nfd,
+                   void                *data)
+{
+    struct nfqnl_msg_packet_hdr *ph;        /* nfq meta header            */
+    struct iphdr                *iph;       /* ip header                  */
+    struct nfq_op_param         *nfq_opp;   /* nfq operational parameters */
+    int32_t                     ans;        /* answer                     */
+
+    /* cast reference to nfq operational parameters */
+    nfq_opp = (struct nfq_op_param *) data;
+
+    /* get nfq packet header (w/ metadata) */
+    ph = nfq_get_msg_packet_hdr(nfd);
+    RET(!ph, -1, "Unable to retrieve packet meta hdr (%s)", strerror(errno));
+
+    /* extract raw packet */
+    ans = nfq_get_payload(nfd, (uint8_t **) &iph);
+    RET(ans == -1, -1, "Unable to retrieve packet data (%s)", strerror(errno));
+    RET(ans != ntohs(iph->tot_len), -1, "Payload size & total len mismatch");
+
+    /* process any delayed events that have timed out */
+    nl_delayed_ev_handle(nfq_opp->proc_delay);
+    ebpf_delayed_ev_handle(nfq_opp->proc_delay);
+
+    /* TODO */
+    DEBUG("INPUT chain is working!");
+
+    return nfq_set_verdict(qh, ntohl(ph->packet_id), NF_ACCEPT, 0, NULL);
+}
+
+/* nfq_out_handler - output chain callback routine for NetfilterQueue
  *  @qh    : netfilter queue handle
  *  @nfmsg : general form of address family dependent message
  *  @nfd   : nfq related data for packet evaluation
@@ -54,6 +102,8 @@ int nfq_out_handler(struct nfq_q_handle *qh,
     ans = nfq_get_payload(nfd, (uint8_t **) &iph);
     RET(ans == -1, -1, "Unable to retrieve packet data (%s)", strerror(errno));
     RET(ans != ntohs(iph->tot_len), -1, "Payload size & total len mismatch");
+
+    DEBUG("OUTPUT chain is working!");
 
     /* extract port based on layer 4 protocol */
     switch (iph->protocol) {
@@ -109,7 +159,6 @@ int nfq_out_handler(struct nfq_q_handle *qh,
 map_fetch_bypass:
     /* get verdict for current packet */
     verdict = get_verdict((void *) iph, hashes, OUTPUT_CHAIN);
-    DEBUG("Got a match --> %s", verdict == NF_DROP ? "DROP" : "ACCEPT");
     return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
 
     /* TODO: rewrite these out (maybe) */

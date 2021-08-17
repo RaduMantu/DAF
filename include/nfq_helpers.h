@@ -14,6 +14,10 @@ int nfq_out_handler(struct nfq_q_handle *qh,
                     struct nfgenmsg     *nfmsg,
                     struct nfq_data     *nfd,
                     void                *data);
+int nfq_in_handler(struct nfq_q_handle *qh,
+                   struct nfgenmsg     *nfmsg,
+                   struct nfq_data     *nfd,
+                   void                *data);
 
 #endif
 
