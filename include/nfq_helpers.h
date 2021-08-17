@@ -10,10 +10,10 @@ struct nfq_op_param {
 };
 
 
-int nfq_handler(struct nfq_q_handle *qh,
-                struct nfgenmsg     *nfmsg,
-                struct nfq_data     *nfd,
-                void                *data);
+int nfq_out_handler(struct nfq_q_handle *qh,
+                    struct nfgenmsg     *nfmsg,
+                    struct nfq_data     *nfd,
+                    void                *data);
 
 #endif
 

@@ -3,20 +3,35 @@
 #include "firewall_args.h"
 #include "util.h"
 
+/* argp API global variables */
+const char *argp_program_version     = "version 1.0";
+const char *argp_program_bug_address = "<andru.mantu@gmail.com>";
+
+/* argument identifiers with no shorthand */
+enum {
+    ARG_QUEUE_IN  = 600,    /* input netfilter queue number  */
+    ARG_QUEUE_OUT = 601,    /* output netfilter queue number */
+};
 
 /* command line arguments */
 static struct argp_option options[] = {
-    { "ebpf-obj",  'e', "OBJ", 0,
-      "eBPF object with select syscall hooks" },
-    { "retain-maps", 'r', NULL, OPTION_ARG_OPTIONAL,
-      "retain objects in set even after unmapping them (default: no)" },
-    { "no-rescan",   'R', NULL, OPTION_ARG_OPTIONAL,
-      "prevent rescanning maps if set is non-empty (default: no, implies: -r" },
-    { "queue",       'q', "NUM", 0,
+    { NULL, 0, NULL, 0, "Core functionality" },
+    { "ebpf-obj",   'e', "OBJ", 0,
+      "eBPF object defining select syscall hooks" },
+    { "proc-delay", 'd', "NUM", 0,
+      "delay between receiving process exit event and handling it "
+      "(default: 50ms) [μs]" },
+    { "queue-out", ARG_QUEUE_OUT, "NUM", 0,
       "netfilter queue number (default: 0)" },
-    { "proc-delay",  'd', "NUM", 0,
-      "delay between process exit event rcv and handling it, in us "
-      " (default: 50ms)" },
+    { "queue-in",  ARG_QUEUE_IN,  "NUM", 0,
+      "netfilter queue number (default: 1)" },
+
+    { NULL, 0, NULL, 0, "Performance tuning" },
+    { "retain-maps", 'r', NULL, 0,
+      "retain objects in set even after unmapping them (default: no)" },
+    { "no-rescan",   'R', NULL, 0,
+      "prevent rescanning maps if set is non-empty "
+      "(default: no, implies: -r)" },
     { 0 }
 };
 
@@ -27,17 +42,23 @@ static error_t parse_opt(int, char *, struct argp_state *);
 static char args_doc[] = "";
 
 /* program documentation */
-static char doc[] = "app-fw -- network traffic filter based on originating"
-                             " process memory mapped objects";
+static char doc[] = "app-fw -- network traffic filter that verifies identity "
+                    "of processes having\n          access to transmitting "
+                    "/ receiving sockets";
 
 /* declaration of relevant structures */
 struct argp   argp = { options, parse_opt, args_doc, doc };
 struct config cfg  = {
-    .proc_delay  = 50'000,
-    .queue_num   = 0,
-    .retain_maps = 0,
-    .no_rescan   = 0,
+    .proc_delay    = 50'000,
+    .queue_num_in  = 1,
+    .queue_num_out = 0,
+    .retain_maps   = 0,
+    .no_rescan     = 0,
 };
+
+/******************************************************************************
+ ************************** PUBLIC API IMPLEMENTATION *************************
+ ******************************************************************************/
 
 /* parse_opt - parses one argument and updates relevant structures
  *  @key   : argument id
@@ -61,9 +82,13 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             cfg.proc_delay *= 1'000;
 
             break;
-        /* netfilter queue number */
-        case 'q':
-            sscanf(arg, "%hu", &cfg.queue_num);
+        /* netfilter input queue number */
+        case ARG_QUEUE_IN:
+            sscanf(arg, "%hu", &cfg.queue_num_in);
+            break;
+        /* netfilter output queue number */
+        case ARG_QUEUE_OUT:
+            sscanf(arg, "%hu", &cfg.queue_num_out);
             break;
         /* retain objects in set after unmapping them */
         case 'r':
@@ -73,6 +98,13 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         case 'R':
             cfg.retain_maps = 1;
             cfg.no_rescan   = 1;
+            break;
+        /* this is invoked after all arguments have been parsed */
+        case ARGP_KEY_END:
+            /* final sanity check */
+            RET(cfg.queue_num_in == cfg.queue_num_out, EINVAL,
+                "input and output queue numbers must be different");
+
             break;
         /* unknown argument */
         default:

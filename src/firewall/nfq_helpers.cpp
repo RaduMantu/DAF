@@ -17,7 +17,7 @@
 using namespace std;
 
 
-/* nfq_handler - callback routine for NetfilterQueue
+/* nfq_out_handler - output callback routine for NetfilterQueue
  *  @qh    : netfilter queue handle
  *  @nfmsg : general form of address family dependent message
  *  @nfd   : nfq related data for packet evaluation
@@ -25,10 +25,10 @@ using namespace std;
  *
  *  @return : 0 if ok, -1 on error (handled by nfq_set_verdict())
  */
-int nfq_handler(struct nfq_q_handle *qh,
-                struct nfgenmsg     *nfmsg,
-                struct nfq_data     *nfd,
-                void                *data)
+int nfq_out_handler(struct nfq_q_handle *qh,
+                    struct nfgenmsg     *nfmsg,
+                    struct nfq_data     *nfd,
+                    void                *data)
 {
     struct nfqnl_msg_packet_hdr *ph;        /* nfq meta header            */
     struct iphdr                *iph;       /* ip header                  */

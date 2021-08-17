@@ -45,30 +45,33 @@ static void sigint_handler(int)
  */
 int main(int argc, char *argv[])
 {
-    int                       ans;              /* answer                      */
-    int                       netlink_fd;       /* netlink socket              */
-    int                       inotify_fd;       /* inotify file descriptor     */
-    int                       nfqueue_fd;       /* nfq file descriptor         */
-    int                       bpf_map_fd;       /* eBPF map file descriptor    */
-    int                       epoll_fd;         /* main epoll file descriptor  */
-    int                       epoll_p0_fd;      /* priority 0 (top) epoll fd   */
-    int                       epoll_p1_fd;      /* priority 1 epoll fd         */
-    int                       epoll_sel_fd;     /* currently selected epoll fd */
-    struct epoll_event        epoll_ev[2];      /* epoll events                */
-    struct sigaction          act;              /* signal response action      */
-    struct rlimit             rlim;             /* resource limit              */
-    struct bpf_object         *bpf_obj;         /* eBPF object file            */
-    struct bpf_program        *bpf_prog;        /* eBPF program in obj         */
-    vector<struct bpf_link *> bpf_links;        /* links to attached programs  */
-    struct ring_buffer        *bpf_ringbuf;     /* eBPF ring buffer reference  */
-    struct nfq_handle         *nf_handle;       /* NFQUEUE handle              */
-    struct nfq_q_handle       *nfq_handle;      /* netfilter queue handle      */
-    struct nfq_op_param       nfq_opp;          /* nfq operational parameters  */
-    struct sockaddr_un        us_name;          /* unix socket name            */
-    int                       us_csock_fd;      /* unix connection socket      */
-    uint8_t                   pkt_buff[0xffff]; /* nfq packet buffer           */
-    char                      usr_input[256];   /* user stdin input buffer     */
-    ssize_t                   rb;               /* bytes read                  */
+    int                       ans;              /* answer                     */
+    int                       netlink_fd;       /* netlink socket             */
+    int                       inotify_fd;       /* inotify file descriptor    */
+    int                       nfqueue_fd_in;    /* nfq input file descriptor  */
+    int                       nfqueue_fd_out;   /* nfq output file descriptor */
+    int                       bpf_map_fd;       /* eBPF map file descriptor   */
+    int                       epoll_fd;         /* main epoll file descriptor */
+    int                       epoll_p0_fd;      /* priority 0 (top) epoll fd  */
+    int                       epoll_p1_fd;      /* priority 1 epoll fd        */
+    int                       epoll_sel_fd;     /* selected epoll fd          */
+    struct epoll_event        epoll_ev[2];      /* epoll events               */
+    struct sigaction          act;              /* signal response action     */
+    struct rlimit             rlim;             /* resource limit             */
+    struct bpf_object         *bpf_obj;         /* eBPF object file           */
+    struct bpf_program        *bpf_prog;        /* eBPF program in obj        */
+    vector<struct bpf_link *> bpf_links;        /* links to attached programs */
+    struct ring_buffer        *bpf_ringbuf;     /* eBPF ring buffer reference */
+    struct nfq_handle         *nf_handle_in;    /* NFQUEUE input handle       */
+    struct nfq_q_handle       *nfq_handle_in;   /* netfilter input handle     */
+    struct nfq_handle         *nf_handle_out;   /* NFQUEUE output handle      */
+    struct nfq_q_handle       *nfq_handle_out;  /* netfilter output handle    */
+    struct nfq_op_param       nfq_opp;          /* nfq operational parameters */
+    struct sockaddr_un        us_name;          /* unix socket name           */
+    int                       us_csock_fd;      /* unix connection socket     */
+    uint8_t                   pkt_buff[0xffff]; /* nfq packet buffer          */
+    char                      usr_input[256];   /* user stdin input buffer    */
+    ssize_t                   rb;               /* bytes read                 */
 
     /* parse command line arguments */
     ans = argp_parse(&argp, argc, argv, 0, 0, &cfg);
@@ -150,32 +153,32 @@ int main(int argc, char *argv[])
     /* set netfilter queue operational parameters */
     nfq_opp.proc_delay = cfg.proc_delay;
 
-    /* open netfilter queue handle */
-    nf_handle = nfq_open();
-    GOTO(!nf_handle, clean_bpf_rb, "unable to open nfq handle (%s)",
+    /* open output netfilter queue handle */
+    nf_handle_out = nfq_open();
+    GOTO(!nf_handle_out, clean_bpf_rb, "unable to open output nfq handle (%s)",
         strerror(errno));
-    INFO("opened nfq handle");
+    INFO("opened output nfq handle");
 
-    /* bind nfq handle to queue */
-    nfq_handle = nfq_create_queue(nf_handle, cfg.queue_num, nfq_handler,
-                    &nfq_opp);
-    GOTO(!nfq_handle, clean_nf_handle, "unable to bind to nfqueue (%s)",
-        strerror(errno));
+    /* bind nfq output handler to queue */
+    nfq_handle_out = nfq_create_queue(nf_handle_out, cfg.queue_num_out,
+                        nfq_out_handler, &nfq_opp);
+    GOTO(!nfq_handle_out, clean_nf_handle_out,
+        "unable to bind to output nfqueue (%s)", strerror(errno));
     INFO("bound to netfilter queue: %d", 0);
 
     /* set amount of data to be copied to userspace (max ip packet size) */
-    ans = nfq_set_mode(nfq_handle, NFQNL_COPY_PACKET, sizeof(pkt_buff));
-    GOTO(ans < 0, clean_nf_handle, "unable to set nfq mode (%s)",
+    ans = nfq_set_mode(nfq_handle_out, NFQNL_COPY_PACKET, sizeof(pkt_buff));
+    GOTO(ans < 0, clean_nf_handle_out, "unable to set output nfq mode (%s)",
         strerror(errno));
-    INFO("configured nfq packet handling parameters");
+    INFO("configured nfq output packet handling parameters");
 
     /* obtain fd of queue handle's associated socket */
-    nfqueue_fd = nfq_fd(nf_handle);
-    INFO("obtained file descriptor of associated nfq socket");
+    nfqueue_fd_out = nfq_fd(nf_handle_out);
+    INFO("obtained file descriptor of associated nfq output socket");
 
     /* create top level epoll instance */
     epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    GOTO(epoll_fd == -1, clean_nf_queue, "failed to create epoll instance (%s)",
+    GOTO(epoll_fd == -1, clean_nf_queue_out, "failed to create epoll instance (%s)",
         strerror(errno));
     INFO("top level epoll instance created");
 
@@ -226,14 +229,15 @@ int main(int argc, char *argv[])
         "failed to add eBPF ringbuffer to epoll monitor (%s)", strerror(errno));
     INFO("eBPF ringbuffer added to epoll-p0 monitor");
 
-    /* add netfilter queue to epoll watchlist (bottom prio) */
-    epoll_ev[0].data.fd = nfqueue_fd;
+    /* add output netfilter queue to epoll watchlist (bottom prio) */
+    epoll_ev[0].data.fd = nfqueue_fd_out;
     epoll_ev[0].events  = EPOLLIN;
 
-    ans = epoll_ctl(epoll_p1_fd, EPOLL_CTL_ADD, nfqueue_fd, &epoll_ev[0]);
+    ans = epoll_ctl(epoll_p1_fd, EPOLL_CTL_ADD, nfqueue_fd_out, &epoll_ev[0]);
     GOTO(ans == -1, clean_epoll_fd_p1,
-        "failed to add netfilter queue to epoll-p1 monitor (%s)", strerror(errno));
-    INFO("netfilter queue added to epoll monitor");
+        "failed to add netfilter output queue to epoll-p1 monitor (%s)",
+        strerror(errno));
+    INFO("netfilter output queue added to epoll monitor");
 
     /* add stdin to epoll watchlist (bottom prio) */
     epoll_ev[0].data.fd = STDIN_FILENO;
@@ -315,12 +319,12 @@ int main(int argc, char *argv[])
         } else if (epoll_ev[0].data.fd == bpf_map_fd) {
             ans = ring_buffer__consume(bpf_ringbuf);
             ALERT(ans < 0, "failed to consume eBPF ringbuffer sample");
-        } else if (epoll_ev[0].data.fd == nfqueue_fd) {
-            rb = read(nfqueue_fd, pkt_buff, sizeof(pkt_buff));
+        } else if (epoll_ev[0].data.fd == nfqueue_fd_out) {
+            rb = read(nfqueue_fd_out, pkt_buff, sizeof(pkt_buff));
             CONT(rb == -1, "failed to read packet from nf queue (%s)",
                 strerror(errno));
 
-            nfq_handle_packet(nf_handle, (char *) pkt_buff, rb); 
+            nfq_handle_packet(nf_handle_out, (char *) pkt_buff, rb); 
         } else if (epoll_ev[0].data.fd == STDIN_FILENO) {
             rb = read(STDIN_FILENO, usr_input, sizeof(usr_input));
             CONT(rb == -1, "failed to read stdin input (%s)", strerror(errno));
@@ -361,12 +365,12 @@ clean_epoll_fd:
     ALERT(ans == -1, "failed to close epoll instance (%s)", strerror(errno));
     INFO("closed top level epoll instance");
 
-clean_nf_queue:
-    nfq_destroy_queue(nfq_handle);
+clean_nf_queue_out:
+    nfq_destroy_queue(nfq_handle_out);
     INFO("destroyed netfilter queue");
 
-clean_nf_handle:
-    ans = nfq_close(nf_handle);
+clean_nf_handle_out:
+    ans = nfq_close(nf_handle_out);
     ALERT(ans, "failed to close nfq handle");
     INFO("closed nfq handle");
 
