@@ -80,10 +80,14 @@ uint32_t _chain_common_filter(struct iphdr *iph, uint32_t chain)
     }
 
     /* find pids that have access to this port & ip configuration             *
-     * NOTE: as far as I know, even udp sockets have bind states (like tcp)   *
-     *       inside the kernel implementation; maybe try to set some of these *
-     *       arguments to 0 depending on the chain and see if misses decrease */
-    pid_set_p = sc_get_pid(l4_proto, src_ip, dst_ip, src_port, dst_port);
+     * NOTE: netlink socket diagnostics are always from the perspective of    *
+     *       the localhost; meaning that on OUTPUT, src_* is actually src_*;  *
+     *       on INPUT however, src_* will actually be dst_* in the invokation *
+     *       of sc_get_pid()                                                  */
+    if (chain == OUTPUT_CHAIN)
+        pid_set_p = sc_get_pid(l4_proto, src_ip, dst_ip, src_port, dst_port);
+    else
+        pid_set_p = sc_get_pid(l4_proto, dst_ip, src_ip, dst_port, src_port);
     if (!pid_set_p)
         goto map_fetch_bypass;
 

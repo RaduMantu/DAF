@@ -1,13 +1,13 @@
-#include <stdio.h>          /* fopen, fclose, getline */
-#include <openssl/sha.h>    /* SHA256_*               */
-#include <fcntl.h>          /* open                   */
-#include <unistd.h>         /* close                  */
-#include <stdlib.h>         /* malloc                 */
-#include <sys/stat.h>       /* fstat                  */
-#include <sys/mman.h>       /* mmap, munmap           */
+#include <stdio.h>          /* fopen, fclose */
+#include <openssl/sha.h>    /* SHA256_*      */
+#include <fcntl.h>          /* open          */
+#include <unistd.h>         /* close         */
+#include <stdlib.h>         /* malloc        */
+#include <sys/stat.h>       /* fstat         */
+#include <sys/mman.h>       /* mmap, munmap  */
 
-#include <unordered_map>    /* unordered_map          */
-#include <unordered_set>    /* unordered_set          */
+#include <unordered_map>    /* unordered_map */
+#include <unordered_set>    /* unordered_set */
 
 #include "hash_cache.h"
 #include "util.h"
@@ -147,20 +147,31 @@ uint8_t *hc_get_sha256(char *path)
  */
 set<string> hc_get_maps(uint32_t pid)
 {
-    FILE    *maps_f;            /* file stream for /proc/<pid>/maps        */
-    char    *linebuf;           /* buffer for line-by-line read            */
-    size_t  linebuf_sz;         /* size of heap-allocated read buffer      */
-    ssize_t rb;                 /* number of read bytes                    */
-    ssize_t wb;                 /* number of written bytes                 */
-    int32_t ans;                /* answer                                  */
-    char    is_x;               /* 'x' if executable; '-' otherwise        */
-    char    obj_path[256];      /* filesystem path to memory-mapped object */
-    char    maps_path[256];     /* path to /proc/<pid>/maps                */
-    unordered_set<string> lms;  /* local maps set                          */
+    static char   *buff = NULL;   /* buffer for contents of /proc/<pid>/maps */
+    static size_t buff_sz = 0;    /* buffer size                             */
+    size_t        trb;            /* total number of read bytes              */
+    ssize_t       rb;             /* number of read bytes                    */
+    ssize_t       wb;             /* number of written bytes                 */
+    int32_t       ans;            /* answer                                  */
+    int32_t       maps_fd;        /* /proc/<pid>/maps file descriptor        */
+    char          *tit;           /* string token iterator                   */
+    char          is_x;           /* 'x' if executable; '-' otherwise        */
+    char          obj_path[256];  /* filesystem path to memory-mapped object */
+    char          maps_path[256]; /* path to /proc/<pid>/maps                */
+    unordered_set<string> lms;    /* local maps set                          */
 
     /* depending on maps retention policy, get reference to working set      *
      * updates to rs will not affect global context --> old maps don't count */
     unordered_set<string>& objs = retain_maps ? pid_to_objs[pid] : lms;
+
+    /* ensure an initial buffer size of 1Mb (a bit large for stack) */
+    if (unlikely(!buff)) {
+        buff = (char *) malloc(1024 * 1024);
+        GOTO(!buff, create_ordered_set, "unable to allocate buffer (%s)",
+            strerror(errno));
+        
+        buff_sz = 1024 * 1024;
+    }
 
     /* if map rescanning is disabled and we have a non-empty set, return it */
     if (no_rescan && objs.size())
@@ -168,39 +179,64 @@ set<string> hc_get_maps(uint32_t pid)
 
     /* create path to maps file */
     wb = snprintf(maps_path, sizeof(maps_path), "/proc/%hu/maps", pid);
-    ALERT(wb == sizeof(maps_path), "consider increasing buffer size"); 
+    ALERT(wb == sizeof(maps_path), "consider increasing buffer size");
 
-    /* read /proc/<pid>/maps line by line */
-    maps_f     = fopen(maps_path, "r");
-    linebuf    = (char *) malloc(512);
-    linebuf_sz = 512;
+    /* read /proc/<pid>/maps and permanently resize buffer (if needed)        *
+     * NOTE: getline() is not an option since getdelim() can fail with SIGSEV *
+     *       if the file is unliked mid-read (very likely for this file)      */ 
+    maps_fd = open(maps_path, O_RDONLY);
+    GOTO(maps_fd == -1, create_ordered_set, "unable to open %s (%s)",
+        maps_path, strerror(errno));
 
-    /* TODO: this method can cause segfaults if the process terminates
-     *       early; try to replace with a single read() and tokenize string
-     *
-     * to recreate problem:
-     *      $ nc fep.grid.pub.ro 22
-     *      ENTER
-     *
-     *      repeat as many times as needed; will cause segfault sometime
-     */
-    while ((rb = getline(&linebuf, &linebuf_sz, maps_f)) != -1) {
+    trb = 0;
+    do {
+        rb = read(maps_fd, buff + trb, buff_sz - trb);
+        GOTO(rb == -1, create_ordered_set, "error reading from %s (%s)",
+            maps_path, strerror(errno));
+
+        trb += rb;
+        if (trb == buff_sz) {
+            buff = (char *) realloc(buff, buff_sz * 2);
+            GOTO(!buff, create_ordered_set, "unable to double buffer size (%s)",
+                strerror(errno));
+
+            buff_sz *= 2;
+        }
+    } while (rb);
+
+    /* do immeidate cleanup */
+    ans = close(maps_fd);
+    ALERT(ans == -1, "unable to close %s (%s)", maps_path, strerror(errno));
+
+    /* this should be impossible... */
+    GOTO(unlikely(!trb), create_ordered_set, "file %s was empty!?", maps_path);
+
+    /* replace final '\n' in /proc/<pid>/maps with '\0' for next step */
+    buff[trb - 1] = '\0';
+
+    /* tokenize file contents (split by '\n') -- parse line by line */
+    tit = strtok(buff, "\n"); 
+    while (tit) {
         /* extract relevant fields from line entry */
-        sscanf(linebuf, "%*lx-%*lx %*c%*c%c%*c %*x %*hhx:%*hhx %*u %s\n",
+        sscanf(tit, "%*lx-%*lx %*c%*c%c%*c %*x %*hhx:%*hhx %*u %s\n",
             &is_x, obj_path);
-        
+
         /* skip non-executable mapped sections           *
-         * skip non-file-backed objects (e.g.: "[vdso]") */
-        if (is_x == '-' || obj_path[0] == '[')
+         * skip non-file-backed objects (e.g.: "[vdso]") *
+         * skip if anonymous executable map              */
+        if (is_x == '-' || obj_path[0] == '[' || !strlen(obj_path)) {
+            /* transition to next token */
+            tit = strtok(NULL, "\n");
+
             continue;
+        }
 
         /* add object path to return set */
         objs.insert(string(obj_path));
-    }
 
-    /* cleanup */
-    free(linebuf);
-    fclose(maps_f);
+        /* transition to next token */
+        tit = strtok(NULL, "\n");
+    }
 
 create_ordered_set:
     /* copy the unordered set contents into an ordered one to maintain object *
