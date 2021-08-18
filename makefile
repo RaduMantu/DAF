@@ -7,7 +7,11 @@ INC = include
 # compilation related parameters
 CXX      = g++
 CXXFLAGS = -std=c++20 -ggdb
-LDFLAGS  = -lnetfilter_queue -lbpf -lprocps -lcrypto
+LDFLAGS  = $(shell pkg-config --libs \
+		   		libnetfilter_queue   \
+				libbpf 				 \
+				libprocps 		     \
+				libcrypto gpgme)
 
 CLANG      = clang
 LLC        = llc
