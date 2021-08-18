@@ -1,4 +1,5 @@
-#include <string.h>     /* strncpy */
+#include <string.h>             /* strncpy, strcmp  */
+#include <linux/netfilter.h>    /* NF_{ACCEPT,DROP} */
 
 #include "firewall_args.h"
 #include "util.h"
@@ -9,8 +10,10 @@ const char *argp_program_bug_address = "<andru.mantu@gmail.com>";
 
 /* argument identifiers with no shorthand */
 enum {
-    ARG_QUEUE_IN  = 600,    /* input netfilter queue number  */
-    ARG_QUEUE_OUT = 601,    /* output netfilter queue number */
+    ARG_QUEUE_IN   = 600,   /* input netfilter queue number  */
+    ARG_QUEUE_OUT  = 601,   /* output netfilter queue number */
+    ARG_POLICY_IN  = 602,   /* INPUT chain default policy    */
+    ARG_POLICY_OUT = 603,   /* OUTPUT chain default policy   */
 };
 
 /* command line arguments */
@@ -25,6 +28,10 @@ static struct argp_option options[] = {
       "netfilter queue number (default: 0)" },
     { "queue-in",  ARG_QUEUE_IN,  "NUM", 0,
       "netfilter queue number (default: 1)" },
+    { "policy-out", ARG_POLICY_OUT, "{ACCEPT|DROP}", 0,
+      "OUTPUT chain policy (default: ACCEPT)" },
+    { "policy-in",  ARG_POLICY_IN,  "{ACCEPT|DROP}", 0,
+      "INPUT chain policy (default: ACCEPT)" },
 
     { NULL, 0, NULL, 0, "Performance tuning" },
     { "retain-maps", 'r', NULL, 0,
@@ -51,6 +58,8 @@ struct config cfg  = {
     .proc_delay    = 50'000,
     .queue_num_in  = 1,
     .queue_num_out = 0,
+    .policy_in     = NF_ACCEPT,
+    .policy_out    = NF_ACCEPT,
     .retain_maps   = 0,
     .no_rescan     = 0,
 };
@@ -88,6 +97,28 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         /* netfilter output queue number */
         case ARG_QUEUE_OUT:
             sscanf(arg, "%hu", &cfg.queue_num_out);
+            break;
+        /* INPUT chain policy */
+        case ARG_POLICY_IN:
+            /* extract policy verdict from arg string */
+            if (!strcmp(arg, "ACCEPT"))
+                cfg.policy_in = NF_ACCEPT;
+            else if (!strcmp(arg, "DROP"))
+                cfg.policy_in = NF_DROP;
+            else
+               RET(1, EINVAL, "unknown INPUT policy"); 
+
+            break;
+        /* OUTPUT chain policy */
+        case ARG_POLICY_OUT:
+            /* extract policy verdict from arg string */
+            if (!strcmp(arg, "ACCEPT"))
+                cfg.policy_out = NF_ACCEPT;
+            else if (!strcmp(arg, "DROP"))
+                cfg.policy_out = NF_DROP;
+            else
+               RET(1, EINVAL, "unknown OUTPUT policy"); 
+
             break;
         /* retain objects in set after unmapping them */
         case 'r':

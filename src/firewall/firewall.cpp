@@ -152,6 +152,8 @@ int main(int argc, char *argv[])
 
     /* set netfilter queue operational parameters */
     nfq_opp.proc_delay = cfg.proc_delay;
+    nfq_opp.policy_in  = cfg.policy_in;
+    nfq_opp.policy_out = cfg.policy_out;
 
     /* open input netfilter queue handle */
     nf_handle_in = nfq_open();

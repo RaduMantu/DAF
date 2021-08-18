@@ -159,11 +159,10 @@ int32_t nfq_in_handler(struct nfq_q_handle *qh,
     nl_delayed_ev_handle(nfq_opp->proc_delay);
     ebpf_delayed_ev_handle(nfq_opp->proc_delay);
 
-    /* get verdict for current packet        *
-     * TODO: implement actual default policy */
+    /* get verdict for current packet or use default policy */
     verdict = _chain_common_filter(iph, INPUT_CHAIN);
     if (verdict == NF_MAX_VERDICT + 1)
-        verdict = NF_ACCEPT;
+        verdict = nfq_opp->policy_in;
 
     /* communicate packet verdict to nfq */
     return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
@@ -204,11 +203,10 @@ int nfq_out_handler(struct nfq_q_handle *qh,
     nl_delayed_ev_handle(nfq_opp->proc_delay);
     ebpf_delayed_ev_handle(nfq_opp->proc_delay);
 
-    /* get verdict for current packet        *
-     * TODO: implement actual default policy */
+    /* get verdict for current packet or use default policy */
     verdict = _chain_common_filter(iph, OUTPUT_CHAIN);
     if (verdict == NF_MAX_VERDICT + 1)
-        verdict = NF_ACCEPT;
+        verdict = nfq_opp->policy_out;
 
     /* communicate packet verdict to nfq */
     return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
