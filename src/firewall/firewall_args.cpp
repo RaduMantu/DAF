@@ -28,9 +28,9 @@ static struct argp_option options[] = {
       "netfilter queue number (default: 0)" },
     { "queue-in",  ARG_QUEUE_IN,  "NUM", 0,
       "netfilter queue number (default: 1)" },
-    { "policy-out", ARG_POLICY_OUT, "{ACCEPT|DROP}", 0,
+    { "pol-out", ARG_POLICY_OUT, "VERDICT", 0,
       "OUTPUT chain policy (default: ACCEPT)" },
-    { "policy-in",  ARG_POLICY_IN,  "{ACCEPT|DROP}", 0,
+    { "pol-in",  ARG_POLICY_IN,  "VERDICT", 0,
       "INPUT chain policy (default: ACCEPT)" },
 
     { NULL, 0, NULL, 0, "Performance tuning" },
@@ -50,7 +50,8 @@ static char args_doc[] = "";
 
 /* program documentation */
 static char doc[] = "Network traffic filter that verifies identity of processes"
-                    " having access to transmitting / receiving sockets";
+                    " having access to transmitting / receiving sockets"
+                    "\vVERDICT={ACCEPT|DROP}";
 
 /* declaration of relevant structures */
 struct argp   argp = { options, parse_opt, args_doc, doc };
