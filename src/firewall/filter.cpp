@@ -5,6 +5,7 @@
 #include <netinet/udp.h>        /* udphdr           */
 #include <netinet/tcp.h>        /* tcphdr           */
 #include <linux/netfilter.h>    /* NF_MAX_VERDICT   */
+#include <openssl/sha.h>        /* SHA256_*         */
 
 #include <unordered_set>        /* unordered set */
 #include <iterator>             /* advance       */
@@ -85,11 +86,14 @@ _send_chain(int32_t us_dsock_fd, vector<struct flt_crit>& chain)
  */
 uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
 {
-    vector<struct flt_crit> *sel_chain;     /* pointer to selected chain */
-    struct iphdr            *iph;           /* ip header                 */
-    struct tcphdr           *tcph;          /* tch header                */
-    struct udphdr           *udph;          /* udp header                */
-    uint8_t                 matched;        /* matching object was found */
+    uint8_t                 md_agg[SHA256_DIGEST_LENGTH];   /* digest buffer */
+    SHA256_CTX              ctx;            /* sha256 context                */
+    vector<struct flt_crit> *sel_chain;     /* pointer to selected chain     */
+    struct iphdr            *iph;           /* ip header                     */
+    struct tcphdr           *tcph;          /* tch header                    */
+    struct udphdr           *udph;          /* udp header                    */
+    uint8_t                 matched;        /* matching object was found     */
+    int32_t                 ans;            /* answer                        */
 
     /* get reference to correct chain */
     if (chain == INPUT_CHAIN)
@@ -196,16 +200,77 @@ uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
                     continue;
 
                 /* a match here means a match on every process; use verdict */
-                return VRD_ACCEPT;
+                return NF_ACCEPT;
             }
 
             /* if verdict is DROP and no matches were found, go to next rule */
             continue;
         }
         /* aggregate hash check */
-        else if (rule.flags & FLT_SINGLE_HASH) {
-            /* TODO */
-            return NF_ACCEPT;
+        else if (rule.flags & FLT_AGGREGATE_HASH) {
+            /* for each process that could have sent this packet */
+            for (auto& pm : maps) {
+                /* initial assumption is that all objects don't match */
+                matched = 0;
+
+                /* prepare sha256 context for aggregate hash */
+                ans = SHA256_Init(&ctx);
+                CONT(!ans, "unable to initialize sha256 context");
+                
+                /* for each object hash in current process */
+                for (auto& h : pm) {
+                    /* update sha256 context */
+                    ans = SHA256_Update(&ctx, h, SHA256_DIGEST_LENGTH);
+                    if (!ans) {
+                        WAR("unable to update sha256 context");
+                        goto process_loop_end;
+                    }
+                }
+
+                /* finalize hashing process */
+                ans = SHA256_Final(md_agg, &ctx);
+                CONT(!ans, "unable to finalize sha256");
+
+                /* match found */
+                if (!memcmp(md_agg, rule.sha256_md, sizeof(rule.sha256_md))
+                    == !(rule.flags & FLT_HASH_INV))
+                {
+                    /* if verdict is DROP, condition is satisfied */
+                    if (rule.verdict & VRD_DROP)
+                        return NF_DROP;
+
+                    /* if verdict is ACCEPT, move on to next process */
+                    matched = 1;
+                    continue;
+                }
+                /* match not found */
+                else {
+                    /* if verdict is ACCEPT, condition in not satisfiable */
+                    matched = 0;
+                    break;
+
+                    /* if verdict is DROP, move on to next process */
+                    continue;
+                }
+
+process_loop_end:
+                /* bypasss hash finalization and match check  *
+                 * something went wrong in the inner for loop */
+                continue;
+            }
+
+            /* if verdict is ACCEPT */
+            if (rule.verdict & VRD_ACCEPT) {
+                /* no matches means packet doesn't match rule; go to next one */
+                if (!matched)
+                    continue;
+
+                /* a match here means a match on every process; use verdict */
+                return NF_ACCEPT;
+            }
+
+            /* if verdict is drop and no matches were found, go to next rule */
+            continue;
         }
     }
 
