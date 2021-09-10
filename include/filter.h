@@ -30,6 +30,10 @@ enum {
     FLT_SRC_PORT_INV   = 1 << 11,
     FLT_DST_PORT_INV   = 1 << 12,
     FLT_HASH_INV       = 1 << 13,
+
+    /* signature insertion */
+    FLT_L3_SIG         = 1 << 14,
+    FLT_L4_SIG         = 1 << 15,
 };
 
 

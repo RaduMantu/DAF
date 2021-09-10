@@ -67,15 +67,16 @@ static struct argp_option options[] = {
 
     /* options */
     { NULL, 0, NULL, 0, "Options (for -I|-A)"},
-    { "src-ip",   's',      "ADDR[/MASK]",    0, "[!] Source ip",                  0 },
-    { "dst-ip",   'd',      "ADDR[/MASK]",    0, "[!] Destination ip",             0 },
-    { "proto",    'p',      "{NUM|tcp|udp}",  0, "[!] Layer 4 protocol number",   10 },
-    { "sport",    ARG_SRCP, "PORT",           0, "[!] Source port",               20 },
-    { "dport",    ARG_DSTP, "PORT",           0, "[!] Destination port",          20 },
-    { "sng-hash", ARG_SNGH, "HEXSTR",         0, "[!] Hash of single object",     30 },
-    { "agg-hash", ARG_AGGH, "HEXSTR",         0, "[!] Aggregate multiple hashes", 30 },
-    { "vrdct",    'v',      "{ACCEPT|DROP}",  0, "Verdict for matched criteria",  40 },
-    { "chain",    'c',      "{INPUT|OUTPUT}", 0, "Where to apply command",        40 },
+    { "src-ip",    's',      "ADDR[/MASK]",    0, "[!] Source ip",                  0 },
+    { "dst-ip",    'd',      "ADDR[/MASK]",    0, "[!] Destination ip",             0 },
+    { "proto",     'p',      "{NUM|tcp|udp}",  0, "[!] Layer 4 protocol number",   10 },
+    { "sport",     ARG_SRCP, "PORT",           0, "[!] Source port",               20 },
+    { "dport",     ARG_DSTP, "PORT",           0, "[!] Destination port",          20 },
+    { "sng-hash",  ARG_SNGH, "HEXSTR",         0, "[!] Hash of single object",     30 },
+    { "agg-hash",  ARG_AGGH, "HEXSTR",         0, "[!] Aggregate multiple hashes", 30 },
+    { "vrdct",     'v',      "{ACCEPT|DROP}",  0, "Verdict for matched criteria",  40 },
+    { "chain",     'c',      "{INPUT|OUTPUT}", 0, "Where to apply command",        40 },
+    { "sig-loc"  , 'l',      "{l3|l4}",        0, "Signature insertion location",  40 },
 
     /* end of list */
     { 0 },
@@ -606,6 +607,19 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
                 cfg.msg.flags |= CTL_OUTPUT;
             } else
                 RET(1, EINVAL, "unknown chain");
+
+            break;
+        /* signature location */
+        case 'l':
+            RET(cfg.rule.flags & (FLT_L3_SIG | FLT_L4_SIG), EINVAL,
+                "signature location already specified");
+
+            if (!strcmp(arg, "l3"))
+                cfg.rule.flags |= FLT_L3_SIG;
+            else if (!strcmp(arg, "l4"))
+                cfg.rule.flags |= FLT_L4_SIG;
+            else
+                RET(1, EINVAL, "unknown signature location");
 
             break;
         /* next argument negation */
