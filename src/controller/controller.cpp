@@ -74,7 +74,7 @@ static unordered_map<uint8_t, char const * const> num2prot = {
 void print_header()
 {
     printf("%5s %6s %20s %20s %16s %9s %9s %9s %66s %7s \n", 
-        "INDEX", "OUTPUT", "SRC IP", "DST IP", "L4 PROTO", "SRC PORT",
+        "INDEX", "CHAIN", "SRC IP", "DST IP", "L4 PROTO", "SRC PORT",
         "DST PORT", "HASH TYPE", "HASH VALUE", "VERDICT");
     printf("----- ------ -------------------- -------------------- "
         "---------------- --------- --------- --------- "

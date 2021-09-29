@@ -59,7 +59,7 @@ static struct argp_option options[] = {
     { "append",     'A', NULL,   0, "Append rule at the end",               0 },
     { "insert",     'I', "NUM",  0, "Insert rule on position (0 is first)", 0 },
     { "delete",     'D', "NUM",  0, "Delete rule on position (0 is first)", 0 },
-    { "print-hash", 'H', "PATH", 0, "prints the SHA256 digest of a file",   10 }, 
+    { "print-hash", 'H', "PATH", 0, "prints the SHA256 digest of a file",   1 }, 
 
     /* meta */
     { NULL, 0, NULL, 0, "Modifiers" },
