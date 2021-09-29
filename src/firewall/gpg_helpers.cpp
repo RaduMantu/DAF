@@ -17,11 +17,13 @@
  * along with app-fw. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <stdint.h>     /* [u]int*_t */
-#include <gpgme.h>      /* gpgme */
-#include <termios.h>    /* tcgetattr, tcsetattr */
-#include <locale.h>     /* setlocale, LC_CTYPE */
-#include <unistd.h>     /* write */
+#include <stdint.h>         /* [u]int*_t */
+#include <gpgme.h>          /* gpgme */
+#include <termios.h>        /* tcgetattr, tcsetattr */
+#include <locale.h>         /* setlocale, LC_CTYPE */
+#include <unistd.h>         /* write */
+#include <string.h>         /* memmove */
+#include <openssl/sha.h>    /* SHA256_DIGEST_LENGTH */
 
 #include "gpg_helpers.h"
 #include "util.h"
@@ -39,6 +41,7 @@ static gpgme_key_t key;         /* gpgme key object */
 
 int32_t gpg_init(char *_ep, char *_kh, char *_kfp, uint8_t _pem);
 int32_t gpg_fini(void);
+int32_t gpg_packet_signature(void *sgn, void *buff, size_t len);
 
 /******************************************************************************
  ************************** INTERNAL HELPER FUNCTIONS *************************
@@ -156,5 +159,97 @@ int32_t gpg_fini(void)
     INFO("destroyed gpgme context");
 
     return 0;
+}
+
+
+/* gpg_packet_signature - computes the packet signaure
+ *  @sgn  : buffer allocated for the signature
+ *  @buff : buffer containing the packet
+ *  @len  : basically ip.total_length
+ *
+ *  @return : 0 if everything went well
+ *
+ * NOTE: the received packet must already have space allocated in the
+ *       options section
+ * NOTE: this generated a _very_ dumb signature
+ *       this is only for testing
+ */
+int32_t gpg_packet_signature(void *sgn, void *buff, size_t len)
+{
+    static uint8_t      masked_pkt[0xffff]; /* masked packet buffer    */
+    gpgme_data_t        gpg_data;           /* input data (the packet) */
+    gpgme_data_t        gpg_sgn;            /* output signature        */
+    gpgme_sign_result_t gpg_sgnres;         /* signature result        */
+    gpgme_error_t       err;                /* gpgme error             */
+    int32_t             retval;             /* return value            */
+    ssize_t             ans;                /* answer                  */
+    
+
+    /* assume abnormal termination until signing successfully concluded */
+    retval = -1;
+
+    /* create copy of packet for masking fields                          *
+     * NOTE: more efficient to create backup of l3,4 headers and restore *
+     *       them after masking fields and computing signature           */
+    memmove(masked_pkt, buff, len);
+
+    /* TODO: mask mutable fields */
+
+    /* import packet buffer into gpgme data object */
+    err = gpgme_data_new_from_mem(&gpg_data, (const char *) masked_pkt, len, 0);
+    RET(err != GPG_ERR_NO_ERROR, -1, 
+        "unable to import packet buffer into gpgme data object (%s | %s)",
+        gpgme_strsource(err), gpgme_strerror(err));
+
+    /* allocate space in a gpgme data object for the signature */
+    err = gpgme_data_new(&gpg_sgn);
+    GOTO(err != GPG_ERR_NO_ERROR, clean_gpg_data_obj,
+        "unable to allocate space for signature data",
+        gpgme_strsource(err), gpgme_strerror(err)); 
+
+    /* compute signature of masked packet buffer */
+    err = gpgme_op_sign(ctx, gpg_data, gpg_sgn, GPGME_SIG_MODE_DETACH);
+    GOTO(err != GPG_ERR_NO_ERROR, clean_gpg_sgn_obj,
+        "unable to sign plaintext data (%s | %s)",
+        gpgme_strsource(err), gpgme_strerror(err));
+
+    /* get result of previous (successful) signature and check compliance *
+     * NOTE: we only have ONE signature; don't overcomplicate it          */
+    gpg_sgnres = gpgme_op_sign_result(ctx);
+    GOTO(!gpg_sgnres || gpg_sgnres->signatures->next, clean_gpg_sgn_obj,
+        "unexpected number of created signatures");
+    GOTO(gpg_sgnres->invalid_signers, clean_gpg_sgn_obj,
+        "invalid signer encountered");
+    GOTO(!gpg_sgnres->signatures, clean_gpg_sgn_obj,
+        "no signatures created");
+    GOTO(gpg_sgnres->signatures->type != GPGME_SIG_MODE_DETACH, clean_gpg_sgn_obj,
+        "signature type mismatch (actual=%d)",
+        gpg_sgnres->signatures->type);
+    GOTO(gpg_sgnres->signatures->hash_algo != GPGME_MD_SHA256, clean_gpg_sgn_obj,
+        "hash algorithm differs from SHA256 (actual=%s)",
+        gpgme_hash_algo_name(gpg_sgnres->signatures->hash_algo));
+    /* TODO: add singer fingerprint match check */
+
+    /* copy signature from gpgme object to native buffer *
+     * NOTE: must rewind cursor first                    */
+    gpgme_data_seek(gpg_sgn, 0, SEEK_SET);
+    ans = gpgme_data_read(gpg_sgn, sgn, SHA256_DIGEST_LENGTH);
+    GOTO(ans == -1, clean_gpg_sgn_obj,
+        "error getting signature from gpgme data object (%s)",
+        strerror(errno));
+    GOTO(ans != SHA256_DIGEST_LENGTH, clean_gpg_sgn_obj,
+        "got %ld/%ld bytes of signature", ans, SHA256_DIGEST_LENGTH);
+
+    /* signing process ended successfully */
+    retval = 0;
+
+    /* cleanup */
+clean_gpg_sgn_obj:
+    gpgme_data_release(gpg_sgn);
+
+clean_gpg_data_obj:
+    gpgme_data_release(gpg_data);
+
+    return retval;
 }
 

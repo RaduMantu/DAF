@@ -30,6 +30,7 @@
 #include "sock_cache.h"
 #include "hash_cache.h"
 #include "nfq_helpers.h"
+#include "gpg_helpers.h"
 #include "filter.h"
 #include "util.h"
 
@@ -224,8 +225,12 @@ int nfq_out_handler(struct nfq_q_handle *qh,
 
     /* get verdict for current packet or use default policy */
     verdict = _chain_common_filter(iph, OUTPUT_CHAIN);
-    if (verdict == NF_MAX_VERDICT + 1)
+    if (verdict == NF_MAX_VERDICT + 1) {
+        DEBUG("MAX VERDICT");
         verdict = nfq_opp->policy_out;
+    } else {
+        DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP");
+    }
 
     /* communicate packet verdict to nfq */
     return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
