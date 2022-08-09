@@ -37,7 +37,6 @@
 #include "netlink_helpers.h"
 #include "ebpf_helpers.h"
 #include "nfq_helpers.h"
-#include "gpg_helpers.h"
 #include "sock_cache.h"
 #include "hash_cache.h"
 #include "filter.h"
@@ -121,15 +120,9 @@ int main(int argc, char *argv[])
     DIE(ans, "unable to initialize hash cache context");
     INFO("initialized hash cache context");
 
-    /* initialize gpgme engine, context, key */
-    ans = gpg_init(cfg.gpg_path, cfg.gpg_home, cfg.key_fingerprint,
-            cfg.pinentry_default);
-    DIE(ans, "unable to initialize gpgme engine / context / key");
-    INFO("initialized gpgme engine / context / key");
-
     /* create ctl unix socket */
     us_csock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    GOTO(us_csock_fd == -1, clean_gpgme, "unable to open AF_UNIX socket (%s)",
+    DIE(us_csock_fd == -1, "unable to open AF_UNIX socket (%s)",
         strerror(errno));
     INFO("created ctl unix socket");
 
@@ -367,7 +360,7 @@ int main(int argc, char *argv[])
         ans = epoll_wait(epoll_sel_fd, &epoll_ev[0], 1, -1);
         DIE(ans == -1 && errno != EINTR, "error waiting for epoll events (%s)",
             strerror(errno));
-   
+ 
         /* handle event */
         if (epoll_ev[0].data.fd == us_csock_fd) {
             ans = flt_handle_ctl(us_csock_fd);
@@ -479,12 +472,6 @@ clean_us_csock_fd:
     ALERT(ans == -1, "failed to unlink named socket %s (%s)", CTL_SOCK_NAME,
         strerror(errno));    
     INFO("destroyed named unix socket");
-
-clean_gpgme:
-    /* deinitialize gpgme */
-    ans = gpg_fini();
-    ALERT(ans, "failed to deinitialize gpgme");
-    INFO("deinitialized gpgme");
 
     return 0;
 }

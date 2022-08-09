@@ -34,8 +34,6 @@ enum {
     ARG_QUEUE_OUT  = 601,   /* output netfilter queue number   */
     ARG_POLICY_IN  = 602,   /* INPUT chain default policy      */
     ARG_POLICY_OUT = 603,   /* OUTPUT chain default policy     */
-    ARG_GPG_PATH   = 604,   /* path to gpg binary              */
-    ARG_GPG_HOME   = 605,   /* path to gpg home (for keystore) */
 };
 
 /* command line arguments */
@@ -54,14 +52,6 @@ static struct argp_option options[] = {
       "OUTPUT chain policy (default: ACCEPT)" },
     { "pol-in", ARG_POLICY_IN,  "VERDICT", 0,
       "INPUT chain policy (default: ACCEPT)" },
-    { "pinentry", 'p', "{def|loop}",  0,
-      "gpg pinentry method (default: def)", 10 },
-    { "gpg-key", 'k', "HEXSTR", 0,
-      "key fingerprint in shortform (8 hexchars)", 10 },
-    { "gpg-path", ARG_GPG_PATH, "PATH", 0,
-      "absolute path to gpg binary", 10 },
-    { "gpg-home", ARG_GPG_HOME, "PATH", 0,
-      "absolute path to gpg home (default: gpg default)", 10 },
 
     { NULL, 0, NULL, 0, "Performance tuning" },
     { "retain-maps", 'r', NULL, 0,
@@ -86,9 +76,6 @@ static char doc[] = "Network traffic filter that verifies identity of processes"
 /* declaration of relevant structures */
 struct argp   argp = { options, parse_opt, args_doc, doc };
 struct config cfg  = {
-    .gpg_path         = NULL,
-    .gpg_home         = NULL,
-    .key_fingerprint  = NULL,
     .proc_delay       = 50'000,
     .queue_num_in     = 1,
     .queue_num_out    = 0,
@@ -96,7 +83,6 @@ struct config cfg  = {
     .policy_out       = NF_ACCEPT,
     .retain_maps      = 0,
     .no_rescan        = 0,
-    .pinentry_default = 1,
 };
 
 /******************************************************************************
@@ -123,32 +109,6 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 
             /* convert from ms in us */
             cfg.proc_delay *= 1'000;
-
-            break;
-        /* gpg pinentry method */
-        case 'p':
-            if (!strcmp(arg, "def"))
-                cfg.pinentry_default = 1;
-            else if (!strcmp(arg, "loop"))
-                cfg.pinentry_default = 0;
-            else
-                RET(1, EINVAL, "Invalid pinentry method");
-
-            break;
-        /* gpg binary path */
-        case ARG_GPG_PATH:
-            cfg.gpg_path = strdup(arg);
-            break;
-        /* gpg keystore home */
-        case ARG_GPG_HOME:
-            cfg.gpg_home = strdup(arg);
-            break;
-        /* gpg key shortform fingerprint */
-        case 'k':
-            RET(strlen(arg) != 8, EINVAL,
-                "shortform key hexstring must have exactly 8 chars");
-
-            cfg.key_fingerprint = strdup(arg);
 
             break;
         /* netfilter input queue number */
@@ -195,8 +155,6 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             /* final sanity check */
             RET(cfg.queue_num_in == cfg.queue_num_out, EINVAL,
                 "input and output queue numbers must be different");
-            RET(!cfg.gpg_path, EINVAL,
-                "must provide gpg path (e.g.: /usr/bin/gpg)");
 
             break;
         /* unknown argument */

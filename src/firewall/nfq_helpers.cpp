@@ -30,7 +30,6 @@
 #include "sock_cache.h"
 #include "hash_cache.h"
 #include "nfq_helpers.h"
-#include "gpg_helpers.h"
 #include "filter.h"
 #include "util.h"
 
