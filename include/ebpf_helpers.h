@@ -28,7 +28,7 @@ struct sample {
      *            multiple of PAGE_SIZE and power of 2                       */
     union {
         uint8_t  is_enter:1;    /* 1:sys_enter_* | 0:sys_exit_* */
-        
+
         struct {                /* padding to 32 byte struct size */
             uint64_t r1;
             uint64_t r2;

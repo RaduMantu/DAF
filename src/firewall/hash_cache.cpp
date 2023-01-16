@@ -121,7 +121,7 @@ _compute_sha256_clean_mmap:
 
 _compute_sha256_clean_fd:
     ans = close(fd);
-    ALERT(ans == -1, "problem closing file %s (%s)", path, strerror(errno)); 
+    ALERT(ans == -1, "problem closing file %s (%s)", path, strerror(errno));
 
     return retval;
 }
@@ -159,7 +159,7 @@ uint8_t *hc_get_sha256(char *path)
 
 /* hc_get_maps - returns set of maps with executable sections for given process
  *  @pid : target process id
- *  
+ *
  *  @return : (ordered) set of paths to objects with .text section
  *
  *  NOTE: the set returned is a copy; caller can do whatever he wants with it
@@ -188,7 +188,7 @@ set<string> hc_get_maps(uint32_t pid)
         buff = (char *) malloc(1024 * 1024);
         GOTO(!buff, create_ordered_set, "unable to allocate buffer (%s)",
             strerror(errno));
-        
+
         buff_sz = 1024 * 1024;
     }
 
@@ -197,12 +197,12 @@ set<string> hc_get_maps(uint32_t pid)
         goto create_ordered_set;
 
     /* create path to maps file */
-    wb = snprintf(maps_path, sizeof(maps_path), "/proc/%hu/maps", pid);
+    wb = snprintf(maps_path, sizeof(maps_path), "/proc/%u/maps", pid);
     ALERT(wb == sizeof(maps_path), "consider increasing buffer size");
 
     /* read /proc/<pid>/maps and permanently resize buffer (if needed)        *
      * NOTE: getline() is not an option since getdelim() can fail with SIGSEV *
-     *       if the file is unliked mid-read (very likely for this file)      */ 
+     *       if the file is unliked mid-read (very likely for this file)      */
     maps_fd = open(maps_path, O_RDONLY);
     GOTO(maps_fd == -1, create_ordered_set, "unable to open %s (%s)",
         maps_path, strerror(errno));
@@ -234,7 +234,7 @@ set<string> hc_get_maps(uint32_t pid)
     buff[trb - 1] = '\0';
 
     /* tokenize file contents (split by '\n') -- parse line by line */
-    tit = strtok(buff, "\n"); 
+    tit = strtok(buff, "\n");
     while (tit) {
         /* extract relevant fields from line entry */
         sscanf(tit, "%*lx-%*lx %*c%*c%c%*c %*x %*hhx:%*hhx %*u %s\n",

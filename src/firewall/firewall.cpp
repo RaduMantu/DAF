@@ -360,7 +360,7 @@ int main(int argc, char *argv[])
         ans = epoll_wait(epoll_sel_fd, &epoll_ev[0], 1, -1);
         DIE(ans == -1 && errno != EINTR, "error waiting for epoll events (%s)",
             strerror(errno));
- 
+
         /* handle event */
         if (epoll_ev[0].data.fd == us_csock_fd) {
             ans = flt_handle_ctl(us_csock_fd);
@@ -373,22 +373,31 @@ int main(int argc, char *argv[])
             ALERT(ans < 0, "failed to consume eBPF ringbuffer sample");
         } else if (epoll_ev[0].data.fd == nfqueue_fd_out) {
             rb = read(nfqueue_fd_out, pkt_buff, sizeof(pkt_buff));
-            CONT(rb == -1, "failed to read packet from nf queue (%s)",
-                strerror(errno));
+            if(rb == -1) {
+                WAR("failed to read packet from nf queue (%s)",
+                    strerror(errno));
+                continue;
+            }
 
-            nfq_handle_packet(nf_handle_out, (char *) pkt_buff, rb); 
-        } else if (epoll_ev[0].data.fd == nfqueue_fd_in) { 
+            nfq_handle_packet(nf_handle_out, (char *) pkt_buff, rb);
+        } else if (epoll_ev[0].data.fd == nfqueue_fd_in) {
             rb = read(nfqueue_fd_in, pkt_buff, sizeof(pkt_buff));
-            CONT(rb == -1, "failed to read packet from nf queue (%s)",
-                strerror(errno));
+            if(rb == -1) {
+                WAR("failed to read packet from nf queue (%s)",
+                    strerror(errno));
+                continue;
+            }
 
             nfq_handle_packet(nf_handle_in, (char *) pkt_buff, rb);
         } else if (epoll_ev[0].data.fd == STDIN_FILENO) {
             rb = read(STDIN_FILENO, usr_input, sizeof(usr_input));
-            CONT(rb == -1, "failed to read stdin input (%s)", strerror(errno));
+            if(rb == -1) {
+                WAR("failed to read stdin input (%s)", strerror(errno));
+                continue;
+            }
 
             /* print debug info on user request */
-            sc_dump_state();    
+            sc_dump_state();
         }
     }
     WAR("exited main loop");
@@ -470,7 +479,7 @@ clean_us_csock_fd:
 
     ans = unlink(CTL_SOCK_NAME);
     ALERT(ans == -1, "failed to unlink named socket %s (%s)", CTL_SOCK_NAME,
-        strerror(errno));    
+        strerror(errno));
     INFO("destroyed named unix socket");
 
     return 0;

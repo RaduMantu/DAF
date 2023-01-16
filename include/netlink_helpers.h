@@ -1,6 +1,6 @@
 #include <stdint.h>         /* [u]int*_t              */
 #include <sys/socket.h>     /* AF_NETLINK, SOCK_DGRAM */
-#include <linux/netlink.h>  /* NETLINK_INET_DIAG      */ 
+#include <linux/netlink.h>  /* NETLINK_INET_DIAG      */
 
 #ifndef _NETLINK_HELPERS_H
 #define _NETLINK_HELPERS_H

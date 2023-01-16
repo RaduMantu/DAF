@@ -58,7 +58,7 @@ struct flt_crit {
 
     /* meta */
     uint32_t flags;
-    
+
     /* reserved for 64-byte alignment */
     uint8_t reserved[6];
 };
@@ -111,7 +111,7 @@ struct ctl_msg {
  ******************************************************************************/
 
 #define INPUT_CHAIN  0
-#define OUTPUT_CHAIN 1 
+#define OUTPUT_CHAIN 1
 
 /******************************************************************************
  ********************************* PUBLIC API *********************************

@@ -44,11 +44,14 @@ static priority_queue<struct ts_event<pair<uint32_t, uint8_t>>> close_events;
  ********************************* PUBLIC API *********************************
  ******************************************************************************/
 
+int32_t process_ebpf_sample(void *ctx, void *data, size_t len);
+void    ebpf_delayed_ev_handle(uint64_t delta_t);
+
 /******************************************************************************
  ************************** PUBLIC API IMPLEMENTATION *************************
  ******************************************************************************/
 
-int process_ebpf_sample(void *ctx, void *data, size_t len)
+int32_t process_ebpf_sample(void *ctx, void *data, size_t len)
 {
     struct sample *s;
 
@@ -63,18 +66,13 @@ int process_ebpf_sample(void *ctx, void *data, size_t len)
             break;
         case SYS_close:     /* 3 */
             if (s->is_enter) {
-                // DEBUG("eBPF: SYS_close(enter) pid:%-5d tid:%-5d fd:%-2d",
-                //    s->us.pid, s->us.tid, s->fd);
-
                 /* update socket cache state                               *
                  * NOTE: assume that this call always succeeds             *
                  * TODO: add a more robust implementation based on pid/tid */
                 close_events.emplace(
                     make_pair<uint32_t, uint8_t>(s->us.pid, s->fd));
-            } else {
-                // DEBUG("eBPF: SYS_close(exit)  pid:%-5d tid:%-5d ret:%-2d",
-                //    s->us.pid, s->us.tid, s->ret);
             }
+
             break;
         default:
             WAR("unkown sample syscall number");

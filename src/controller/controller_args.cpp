@@ -59,7 +59,7 @@ static struct argp_option options[] = {
     { "append",     'A', NULL,   0, "Append rule at the end",               0 },
     { "insert",     'I', "NUM",  0, "Insert rule on position (0 is first)", 0 },
     { "delete",     'D', "NUM",  0, "Delete rule on position (0 is first)", 0 },
-    { "print-hash", 'H', "PATH", 0, "prints the SHA256 digest of a file",   1 }, 
+    { "print-hash", 'H', "PATH", 0, "prints the SHA256 digest of a file",   1 },
 
     /* meta */
     { NULL, 0, NULL, 0, "Modifiers" },
@@ -103,7 +103,7 @@ struct ctl_msg cfg  = {
  ******************************************************************************/
 
 /* _compute_sha256 - computes hash of file on disk
- *  @path : (relative of absolute) path to file on disk 
+ *  @path : (relative of absolute) path to file on disk
  *  @buff : message digest buffer (len = SHA256_DIGEST_LENGTH)
  *
  *  @return : 0 if everythin went well
@@ -127,7 +127,7 @@ static int32_t _compute_sha256(char const *path, uint8_t *buff)
     /* get file stats (interested only in its size) */
     ans = fstat(fd, &fs);
     GOTO(ans == -1, sha256_clean_fd, "unable to stat file (%s)",
-        strerror(errno)); 
+        strerror(errno));
 
     /* map file in memory */
     pa = (uint8_t *) mmap(NULL, fs.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -248,7 +248,7 @@ static int32_t _parse_cidr_addr(char *str, uint32_t *addr, uint32_t *mask)
         RET(!_isnumber(nm), EINVAL, "invalid network mask");
         sscanf(nm, "%lu", &prefix);
         RET(prefix < 0 || prefix > 32, EINVAL, "invalid network mask");
-    } 
+    }
     /* or assume that it's /32 */
     else
         prefix = 32;
@@ -343,7 +343,7 @@ _read_hexstring(char *str_buff, uint8_t *bin_buff, size_t buff_len)
 }
 
 /******************************************************************************
- ************************** PUBLIC API IMPLEMENTATION ************************* 
+ ************************** PUBLIC API IMPLEMENTATION *************************
  ******************************************************************************/
 
 /* print_hexstring - prints a hexstring to stdout without newline
@@ -356,7 +356,7 @@ void print_hexstring(const uint8_t *buff, size_t len)
         printf("%02hhx", buff[i]);
 }
 
-/* parse_opt - parses one argument and updates relevant structures 
+/* parse_opt - parses one argument and updates relevant structures
  *  @key   : argument id
  *  @arg   : pointer to actual argument
  *  @state : parsing state
@@ -466,7 +466,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
                 cfg.rule.flags |= FLT_DST_IP_INV;
                 invert = 0;
             }
-           
+
             /* parse CIDR address */
             ans = _parse_cidr_addr(arg, &cfg.rule.dst_ip, &cfg.rule.dst_ip_mask);
             RET(ans, ans, "failed to parse CIDR address");
@@ -518,7 +518,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             /* parse port number */
             ans = _parse_port_num(arg, &cfg.rule.src_port);
             RET(ans, ans, "failed to parse source port number");
-           
+
             break;
         /* destination port */
         case ARG_DSTP:
@@ -535,7 +535,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             /* parse port number */
             ans = _parse_port_num(arg, &cfg.rule.dst_port);
             RET(ans, ans, "failed to parse destination port number");
-           
+
             break;
         /* aggregate hash */
         case ARG_AGGH:
@@ -639,11 +639,11 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 
             /* from here, we sanitize requests for the firewall */
             RET(!(cfg.msg.flags & CTL_REQ_MASK), EINVAL,
-                "no command specified");     
-            RET((cfg.msg.flags & (CTL_APPEND | CTL_INSERT)) 
+                "no command specified");
+            RET((cfg.msg.flags & (CTL_APPEND | CTL_INSERT))
                 && !(cfg.rule.verdict & VRD_MASK),
                 EINVAL, "no verdict specified");
-            RET((cfg.msg.flags & (CTL_APPEND | CTL_INSERT | CTL_DELETE)) 
+            RET((cfg.msg.flags & (CTL_APPEND | CTL_INSERT | CTL_DELETE))
                 && !(cfg.msg.flags & CHAIN_MASK),
                 EINVAL, "no chain specified");
 

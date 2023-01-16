@@ -127,7 +127,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             else if (!strcmp(arg, "DROP"))
                 cfg.policy_in = NF_DROP;
             else
-               RET(1, EINVAL, "unknown INPUT policy"); 
+               RET(1, EINVAL, "unknown INPUT policy");
 
             break;
         /* OUTPUT chain policy */
@@ -138,7 +138,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             else if (!strcmp(arg, "DROP"))
                 cfg.policy_out = NF_DROP;
             else
-               RET(1, EINVAL, "unknown OUTPUT policy"); 
+               RET(1, EINVAL, "unknown OUTPUT policy");
 
             break;
         /* retain objects in set after unmapping them */

@@ -5,17 +5,18 @@ OBJ = obj
 INC = include
 
 # compilation related parameters
+# TODO: replace deprecated libcrypto calls with EVP counterparts
 CXX      = g++
-CXXFLAGS = -std=c++20 -ggdb
+CXXFLAGS = -std=c++20 -ggdb -Wno-deprecated -Wno-deprecated-declarations
 LDFLAGS  = $(shell pkg-config --libs \
-		   		libnetfilter_queue   \
-				libbpf 				 \
-				libprocps 		     \
-				libcrypto)
+                libnetfilter_queue   \
+                libbpf               \
+                libprocps            \
+                libcrypto)
 
 CLANG      = clang
 LLC        = llc
-CLANGFLAGS = -D__KERNEL__ -D__BPF_TRACING__ -emit-llvm -O2 -fno-stack-protector
+CLANGFLAGS = -D__KERNEL__ -D__BPF_TRACING__ -emit-llvm -O2 -fno-stack-protector -g
 LLCFLAGS   = -march=bpf -filetype=obj
 
 
@@ -40,6 +41,10 @@ build: $(BIN)/app-fw $(BIN)/ctl-fw $(OBJECTS_BPF)
 # non-persistent directory creation rule
 %/:
 	@mkdir -p $@
+
+# compile_commands.json generation rule
+bear:
+	bear -- $(MAKE) build
 
 # final binary generation rules
 $(BIN)/app-fw: $(OBJECTS_FW) | $(BIN)/

@@ -73,7 +73,7 @@ static unordered_map<uint8_t, char const * const> num2prot = {
  */
 void print_header()
 {
-    printf("%5s %6s %20s %20s %16s %9s %9s %9s %66s %7s \n", 
+    printf("%5s %6s %20s %20s %16s %9s %9s %9s %66s %7s \n",
         "INDEX", "CHAIN", "SRC IP", "DST IP", "L4 PROTO", "SRC PORT",
         "DST PORT", "HASH TYPE", "HASH VALUE", "VERDICT");
     printf("----- ------ -------------------- -------------------- "
@@ -85,7 +85,7 @@ void print_header()
 /* print_rule - prints entry from rule table
  *  @idx   : index (order in which it was received)
  *  @chain : 0 if input, 1 if output
- *  @rule  : ptr to filtering criteria structure 
+ *  @rule  : ptr to filtering criteria structure
  */
 void print_rule(size_t idx, uint8_t chain, struct flt_crit *rule)
 {
@@ -157,7 +157,7 @@ void print_rule(size_t idx, uint8_t chain, struct flt_crit *rule)
     /* print sha256 md */
     if (rule->flags & FLT_HASH) {
         /* hash type */
-        printf("%9s ", 
+        printf("%9s ",
             (rule->flags & FLT_AGGREGATE_HASH)
             ? "aggregate"
             : "single");

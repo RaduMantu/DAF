@@ -122,7 +122,7 @@ uint32_t _chain_common_filter(struct iphdr *iph, uint32_t chain)
             /* get sha256 digest of object (unlikely to fail -> report it) */
             md = hc_get_sha256((char *) map_it.c_str());
             RET(!md, NF_MAX_VERDICT + 1, "could not get sha256 digest of %s",
-                map_it.c_str()); 
+                map_it.c_str());
 
             /* push hashes to vector in object's order in set */
             hashes[pid_idx].push_back(md);
@@ -136,7 +136,7 @@ map_fetch_bypass:
     /* get verdict for current packet                                         *
      * NOTE: the return value can also be NF_MAX_VERDICT; caller is expected  *
      *       to apply its default policy (ACCEPT or DROP) if this is returned */
-    return get_verdict((void *) iph, hashes, chain); 
+    return get_verdict((void *) iph, hashes, chain);
 }
 
 /******************************************************************************
@@ -225,7 +225,6 @@ int nfq_out_handler(struct nfq_q_handle *qh,
     /* get verdict for current packet or use default policy */
     verdict = _chain_common_filter(iph, OUTPUT_CHAIN);
     if (verdict == NF_MAX_VERDICT + 1) {
-        DEBUG("MAX VERDICT");
         verdict = nfq_opp->policy_out;
     } else {
         DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP");

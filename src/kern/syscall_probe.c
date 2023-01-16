@@ -51,10 +51,10 @@ struct sys_enter_close_args {
 };
 
 /* ringbuffer map */
-struct bpf_map_def SEC("maps") buffer = {
-    .type = BPF_MAP_TYPE_RINGBUF,
-    .max_entries = 4096 * sizeof(struct sample),
-};
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 4096);
+} buffer SEC(".maps");
 
 
 /* trace_exit_socket - attaches to socket syscall exit tracepoint

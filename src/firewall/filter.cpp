@@ -234,8 +234,11 @@ uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
 
                 /* prepare sha256 context for aggregate hash */
                 ans = SHA256_Init(&ctx);
-                CONT(!ans, "unable to initialize sha256 context");
-                
+                if(!ans) {
+                    WAR("unable to initialize sha256 context");
+                    continue;
+                }
+
                 /* for each object hash in current process */
                 for (auto& h : pm) {
                     /* update sha256 context */
@@ -248,7 +251,10 @@ uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
 
                 /* finalize hashing process */
                 ans = SHA256_Final(md_agg, &ctx);
-                CONT(!ans, "unable to finalize sha256");
+                if(!ans) {
+                    WAR("unable to finalize sha256");
+                    continue;
+                }
 
                 /* match found */
                 if (!memcmp(md_agg, rule.sha256_md, sizeof(rule.sha256_md))
@@ -324,7 +330,7 @@ int32_t flt_handle_ctl(int32_t us_csock_fd)
     us_dsock_fd = accept(us_csock_fd, NULL, NULL);
     RET(us_dsock_fd == -1, -1, "unable to accept new connection (%s)",
         strerror(errno));
-    
+
     /* read request from client */
     rb = read(us_dsock_fd, &reqm, sizeof(reqm));
     GOTO(rb == -1, clean_data_socket,

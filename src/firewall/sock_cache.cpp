@@ -199,11 +199,11 @@ static int32_t _scan_proc_sockets(uint32_t pid)
         dir_miss++;
 
         WAR("could not open %s", procfs_path);
-        return -1;   
+        return -1;
     }
-   
-    errno = 0; 
-    while (de = readdir(d)) {
+
+    errno = 0;
+    while ((de = readdir(d))) {
         /* skip non-symlinks */
         if (de->d_type != DT_LNK)
             continue;
@@ -227,7 +227,7 @@ static int32_t _scan_proc_sockets(uint32_t pid)
     if (errno == 2) {
         symlink_miss++;
     }
-  
+
     /* cleanup */
     closedir(d);
 
@@ -344,12 +344,12 @@ void sc_close_fd(uint32_t pid, uint8_t fd)
             if (port_it != sock_to_port.end()) {
                 port_to_sock.erase(port_it->second);
                 sock_to_port.erase(port_it);
-            }        
+            }
         }
     } else
         WAR("no pid set exists for inode %u", inode);
 
-    /* find socket set for given pid & remove inode             * 
+    /* find socket set for given pid & remove inode             *
      * NOTE: sock_set will be removed for pid only when exiting */
     auto sock_set = pid_to_socks.find(pid);
     if (sock_set != pid_to_socks.end()) {
@@ -385,7 +385,7 @@ void sc_proc_exit(uint32_t pid)
                     if (port_it != sock_to_port.end()) {
                         port_to_sock.erase(port_it->second);
                         sock_to_port.erase(port_it);
-                    }        
+                    }
                 }
             } else
                 WAR("no pid set exists for inode %u", inode);
@@ -419,7 +419,7 @@ void sc_proc_fork(uint32_t parent_pid, uint32_t child_pid)
 {
     /* check if parent was tracked (results in fast path) */
     auto tracked_parent = tracked_pids.find(parent_pid);
-    
+
     /* slow path - scan /proc/<parent_pid>/fd/ and add him to tracked set */
     if (tracked_parent == tracked_pids.end()) {
         int32_t ans = _scan_proc_sockets(parent_pid);
@@ -470,7 +470,7 @@ void sc_dump_state(void)
 {
     printf("=======================[ state dump ]=======================\n");
 
-    /* for all monitored processes */ 
+    /* for all monitored processes */
     for (auto& [pid_k, sock_set] : pid_to_socks) {
         printf(MAGENTA_B ">>> pid:   " UNSET_B "%5u (socks: %lu)\n" CLR,
             pid_k, sock_set.size());
@@ -516,13 +516,13 @@ unordered_set<uint32_t> *sc_get_pid(uint8_t  protocol,
     /* sanity check; a src_port 0 will not break nl_sock_diag but will waste *
      * time with netlink socket diagnostics query that we can't use anyway   */
     RET(!src_port, NULL, "zero-valued src port was provided");
-    
+
     /* fast path: look up port:inode association in cache */
     auto inode_it = port_to_sock.find(src_port);
     if (inode_it != port_to_sock.end()) {
         inode = inode_it->second;
     }
-   /* slow path: find socket via netlink diagnostics */ 
+   /* slow path: find socket via netlink diagnostics */
     else {
         /* look up inode of socket with given filtering criteria */
         ans = nl_sock_diag(nsd_fd, protocol, src_ip, dst_ip, src_port,
@@ -552,5 +552,4 @@ unordered_set<uint32_t> *sc_get_pid(uint8_t  protocol,
 
     return NULL;
 }
-
 
