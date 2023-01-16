@@ -17,13 +17,14 @@
  * along with app-fw. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <stdio.h>          /* fopen, fclose */
-#include <openssl/sha.h>    /* SHA256_*      */
-#include <fcntl.h>          /* open          */
-#include <unistd.h>         /* close         */
-#include <stdlib.h>         /* malloc        */
-#include <sys/stat.h>       /* fstat         */
-#include <sys/mman.h>       /* mmap, munmap  */
+#include <stdio.h>          /* fopen, fclose        */
+#include <openssl/sha.h>    /* SHA256_DIGEST_LENGTH */
+#include <openssl/evp.h>    /* EVP_*                */
+#include <fcntl.h>          /* open                 */
+#include <unistd.h>         /* close                */
+#include <stdlib.h>         /* malloc               */
+#include <sys/stat.h>       /* fstat                */
+#include <sys/mman.h>       /* mmap, munmap         */
 
 #include <unordered_map>    /* unordered_map */
 #include <unordered_set>    /* unordered_set */
@@ -68,7 +69,7 @@ void        hc_proc_exit(uint32_t pid);
  */
 uint8_t *_compute_sha256(char *path)
 {
-    SHA256_CTX  ctx;        /* sha256 context        */
+    EVP_MD_CTX *ctx;        /* sha256 contex         */
     int32_t     fd;         /* file descriptor       */
     struct stat fs;         /* file stat buffer      */
     uint8_t     *pa;        /* mmapped file address  */
@@ -85,29 +86,32 @@ uint8_t *_compute_sha256(char *path)
 
     /* get file stats (interested only in its size) */
     ans = fstat(fd, &fs);
-    GOTO(ans == -1, _compute_sha256_clean_fd, "unable to stat file %s (%s)",
+    GOTO(ans == -1, clean_fd, "unable to stat file %s (%s)",
         path, strerror(errno));
 
     /* map file in virtual memory */
     pa = (uint8_t *) mmap(NULL, fs.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    GOTO(pa == MAP_FAILED, _compute_sha256_clean_fd,
+    GOTO(pa == MAP_FAILED, clean_fd,
         "unable to mmap file %s (%s)", path, strerror(errno));
 
     /* allocate space on heap for hash                                   *
      * NOTE: must be manually freed when cache entry is removed (never?) */
     md = (uint8_t *) malloc(SHA256_DIGEST_LENGTH);
-    GOTO(!md, _compute_sha256_clean_mmap, "unable to allocate space (%s)",
+    GOTO(!md, clean_mmap, "unable to allocate space (%s)",
         strerror(errno));
 
     /* calculate sha256 of given file */
-    ans = SHA256_Init(&ctx);
-    GOTO(!ans, _compute_sha256_clean_mmap, "unable to initialize context");
+    ctx = EVP_MD_CTX_new();
+    GOTO(!ctx, clean_mmap, "unable to create EVP context");
 
-    ans = SHA256_Update(&ctx, pa, fs.st_size);
-    GOTO(!ans, _compute_sha256_clean_mmap, "unable to update internal state");
+    ans = EVP_DigestInit(ctx, EVP_sha256());
+    GOTO(ans != 1, clean_ctx, "unable to initialize SHA256 context");
 
-    ans = SHA256_Final(md, &ctx);
-    GOTO(!ans, _compute_sha256_clean_mmap, "unable to finalize hashing");
+    ans = EVP_DigestUpdate(ctx, pa, fs.st_size);
+    GOTO(ans != 1, clean_ctx, "unable to update SHA256 context");
+
+    ans = EVP_DigestFinal_ex(ctx, md, NULL);
+    GOTO(ans != 1, clean_ctx, "unable to finalize hashing");
 
     /* initialize/update cache with the calculated digest for future queries */
     path_to_hash[string(path)] = md;
@@ -115,11 +119,14 @@ uint8_t *_compute_sha256(char *path)
     /* perform cleanup */
     retval = md;
 
-_compute_sha256_clean_mmap:
+clean_ctx:
+    EVP_MD_CTX_free(ctx);
+
+clean_mmap:
     ans = munmap(pa, fs.st_size);
     ALERT(ans == -1, "problem unmapping file %s (%s)", path, strerror(errno));
 
-_compute_sha256_clean_fd:
+clean_fd:
     ans = close(fd);
     ALERT(ans == -1, "problem closing file %s (%s)", path, strerror(errno));
 

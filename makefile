@@ -7,7 +7,7 @@ INC = include
 # compilation related parameters
 # TODO: replace deprecated libcrypto calls with EVP counterparts
 CXX      = g++
-CXXFLAGS = -std=c++20 -ggdb -Wno-deprecated -Wno-deprecated-declarations
+CXXFLAGS = -std=c++20 -ggdb
 LDFLAGS  = $(shell pkg-config --libs \
                 libnetfilter_queue   \
                 libbpf               \

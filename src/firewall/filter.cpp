@@ -17,14 +17,15 @@
  * along with app-fw. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <unistd.h>             /* read, close      */
-#include <sys/socket.h>         /* accept           */
-#include <sys/uio.h>            /* writev           */
-#include <netinet/ip.h>         /* iphdr            */
-#include <netinet/udp.h>        /* udphdr           */
-#include <netinet/tcp.h>        /* tcphdr           */
-#include <linux/netfilter.h>    /* NF_MAX_VERDICT   */
-#include <openssl/sha.h>        /* SHA256_*         */
+#include <unistd.h>             /* read, close          */
+#include <sys/socket.h>         /* accept               */
+#include <sys/uio.h>            /* writev               */
+#include <netinet/ip.h>         /* iphdr                */
+#include <netinet/udp.h>        /* udphdr               */
+#include <netinet/tcp.h>        /* tcphdr               */
+#include <linux/netfilter.h>    /* NF_MAX_VERDICT       */
+#include <openssl/sha.h>        /* SHA256_DIGEST_LENGTH */
+#include <openssl/evp.h>        /* EVP_*                */
 
 #include <unordered_set>        /* unordered set */
 #include <iterator>             /* advance       */
@@ -106,7 +107,7 @@ _send_chain(int32_t us_dsock_fd, vector<struct flt_crit>& chain)
 uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
 {
     uint8_t                 md_agg[SHA256_DIGEST_LENGTH];   /* digest buffer */
-    SHA256_CTX              ctx;            /* sha256 context                */
+    EVP_MD_CTX              *ctx;           /* sha256 context                */
     vector<struct flt_crit> *sel_chain;     /* pointer to selected chain     */
     struct iphdr            *iph;           /* ip header                     */
     struct tcphdr           *tcph;          /* tch header                    */
@@ -232,27 +233,34 @@ uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
                 /* initial assumption is that all objects don't match */
                 matched = 0;
 
-                /* prepare sha256 context for aggregate hash */
-                ans = SHA256_Init(&ctx);
+                /* create new EVP context */
+                ctx = EVP_MD_CTX_new();
                 if(!ans) {
-                    WAR("unable to initialize sha256 context");
+                    WAR("unable to create EVP context");
                     continue;
+                }
+
+                /* initialize SHA256 context for aggregate hash */
+                ans = EVP_DigestInit(ctx, EVP_sha256());
+                if (ans != 1) {
+                    WAR("unable to initialize SHA256 context");
+                    goto process_loop_end;
                 }
 
                 /* for each object hash in current process */
                 for (auto& h : pm) {
                     /* update sha256 context */
-                    ans = SHA256_Update(&ctx, h, SHA256_DIGEST_LENGTH);
-                    if (!ans) {
-                        WAR("unable to update sha256 context");
+                    ans = EVP_DigestUpdate(ctx, h, SHA256_DIGEST_LENGTH);
+                    if (ans != 1) {
+                        WAR("unable to update SHA256 context");
                         goto process_loop_end;
                     }
                 }
 
                 /* finalize hashing process */
-                ans = SHA256_Final(md_agg, &ctx);
-                if(!ans) {
-                    WAR("unable to finalize sha256");
+                ans = EVP_DigestFinal(ctx, md_agg, NULL);
+                if(ans != 1) {
+                    WAR("unable to finalize SHA256");
                     continue;
                 }
 
@@ -281,7 +289,7 @@ uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
 process_loop_end:
                 /* bypasss hash finalization and match check  *
                  * something went wrong in the inner for loop */
-                continue;
+                EVP_MD_CTX_free(ctx);
             }
 
             /* if verdict is ACCEPT */

@@ -17,15 +17,16 @@
  * along with app-fw. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <string.h>         /* strchr             */
-#include <stdlib.h>         /* realpath, malloc   */
-#include <fcntl.h>          /* open               */
-#include <unistd.h>         /* close, exit        */
-#include <sys/mman.h>       /* mmap, munmap       */
-#include <sys/stat.h>       /* stat               */
-#include <arpa/inet.h>      /* inet_pton, AF_INET */
-#include <netinet/in.h>     /* IPPROTO_*          */
-#include <openssl/sha.h>    /* SHA256_*           */
+#include <string.h>         /* strchr               */
+#include <stdlib.h>         /* realpath, malloc     */
+#include <fcntl.h>          /* open                 */
+#include <unistd.h>         /* close, exit          */
+#include <sys/mman.h>       /* mmap, munmap         */
+#include <sys/stat.h>       /* stat                 */
+#include <arpa/inet.h>      /* inet_pton, AF_INET   */
+#include <netinet/in.h>     /* IPPROTO_*            */
+#include <openssl/sha.h>    /* SHA256_DIGEST_LENGTH */
+#include <openssl/evp.h>    /* EVP_*                */
 
 #include <string>           /* string */
 #include <set>              /* set    */
@@ -110,7 +111,7 @@ struct ctl_msg cfg  = {
  */
 static int32_t _compute_sha256(char const *path, uint8_t *buff)
 {
-    SHA256_CTX  ctx;    /* sha256 context       */
+    EVP_MD_CTX *ctx;    /* sha256 contex         */
     int32_t     fd;     /* file descriptor      */
     struct stat fs;     /* file stat buffer     */
     uint8_t     *pa;    /* mmapped file address */
@@ -126,33 +127,39 @@ static int32_t _compute_sha256(char const *path, uint8_t *buff)
 
     /* get file stats (interested only in its size) */
     ans = fstat(fd, &fs);
-    GOTO(ans == -1, sha256_clean_fd, "unable to stat file (%s)",
+    GOTO(ans == -1, clean_fd, "unable to stat file (%s)",
         strerror(errno));
 
     /* map file in memory */
     pa = (uint8_t *) mmap(NULL, fs.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    GOTO(pa == MAP_FAILED, sha256_clean_fd, "unable to map file (%s)",
+    GOTO(pa == MAP_FAILED, clean_fd, "unable to map file (%s)",
         strerror(errno));
 
     /* calculate sha256 of given file */
-    ans = SHA256_Init(&ctx);
-    GOTO(!ans, sha256_clean_mmap, "unable to initalize sha256 context");
+    ctx = EVP_MD_CTX_new();
+    GOTO(!ctx, clean_mmap, "unable to create EVP context");
 
-    ans = SHA256_Update(&ctx, pa, fs.st_size);
-    GOTO(!ans, sha256_clean_mmap, "unable to update sha256 context");
+    ans = EVP_DigestInit(ctx, EVP_sha256());
+    GOTO(ans != 1, clean_ctx, "unable to initialize SHA256 context");
 
-    ans = SHA256_Final(buff, &ctx);
-    GOTO(!ans, sha256_clean_mmap, "unable to finalize hashing");
+    ans = EVP_DigestUpdate(ctx, pa, fs.st_size);
+    GOTO(ans != 1, clean_ctx, "unable to update SHA256 context");
+
+    ans = EVP_DigestFinal_ex(ctx, buff, NULL);
+    GOTO(ans != 1, clean_ctx, "unable to finalize hashing");
 
     /* hashing finalized normally */
     ret = 0;
 
     /* perform cleanup */
-sha256_clean_mmap:
+clean_ctx:
+    EVP_MD_CTX_free(ctx);
+
+clean_mmap:
     ans = munmap(pa, fs.st_size);
     ALERT(ans == -1, "problem unmapping files (%s)", strerror(errno));
 
-sha256_clean_fd:
+clean_fd:
     ans = close(fd);
     ALERT(ans == -1, "unable to close file (%s)", strerror(errno));
 
@@ -168,18 +175,23 @@ static int32_t _display_hashes(set<string>& paths)
 {
     uint8_t    md_single[SHA256_DIGEST_LENGTH];
     uint8_t    md_aggregate[SHA256_DIGEST_LENGTH];
-    SHA256_CTX ctx;     /* sha256 context */
-    int32_t    ans;
+    EVP_MD_CTX *ctx;        /* sha256 contex */
+    int32_t    ans;         /* answer        */
+    int32_t    ret = -1;    /* return value  */
 
     /* prepare sha256 context for aggregate hash */
-    ans = SHA256_Init(&ctx);
-    RET(!ans, -1, "unable to initialize sha256 context");
+    ctx = EVP_MD_CTX_new();
+    RET(!ctx, -1, "unable to create EVP context");
+
+    ans = EVP_DigestInit(ctx, EVP_sha256());
+    GOTO(ans != 1, clean_ctx, "unable to initialize SHA256 context");
 
     /* for each absolute path (in order!) */
     for (auto& path_it : paths) {
         /* compute sha256 of file */
         ans = _compute_sha256(path_it.c_str(), md_single);
-        RET(ans, -1, "unable to calculate sha256 of %s", path_it.c_str());
+        GOTO(ans, clean_ctx, "unable to calculate sha256 of %s",
+             path_it.c_str());
 
         /* print single hash entry */
         printf("%-52s -- ", path_it.c_str());
@@ -187,13 +199,14 @@ static int32_t _display_hashes(set<string>& paths)
         printf("\n");
 
         /* update aggregate hash */
-        ans = SHA256_Update(&ctx, md_single, sizeof(md_single));
-        RET(!ans, -1, "unable to update sha256 context");
+        ans = EVP_DigestUpdate(ctx, md_single, sizeof(md_single));
+        GOTO(ans != 1, clean_ctx, "unable to update SHA256 context");
+
     }
 
     /* finalize aggregate hash calculation */
-    ans = SHA256_Final(md_aggregate, &ctx);
-    RET(!ans, -1, "unable to finalize hashing");
+    ans = EVP_DigestFinal_ex(ctx, md_aggregate, NULL);
+    GOTO(ans != 1, clean_ctx, "unable to finalize hashing");
 
     /* print aggregate hash */
     printf("============================================================"
@@ -201,6 +214,12 @@ static int32_t _display_hashes(set<string>& paths)
            "\n%-52s -- ", "AGGREGATE HASH");
     print_hexstring(md_aggregate, sizeof(md_aggregate));
     printf("\n");
+
+    /* success */
+    ret = 0;
+
+clean_ctx:
+    EVP_MD_CTX_free(ctx);
 
     return 0;
 }
