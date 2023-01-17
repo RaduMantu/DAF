@@ -21,6 +21,7 @@
 #include <netinet/ip.h>     /* iphdr         */
 #include <netinet/tcp.h>    /* tcphdr        */
 #include <netinet/udp.h>    /* udphdr        */
+#include <string.h>         /* memmove       */
 
 #include <set>              /* set           */
 #include <vector>           /* vector        */
@@ -31,6 +32,7 @@
 #include "hash_cache.h"
 #include "nfq_helpers.h"
 #include "filter.h"
+#include "csum.h"
 #include "util.h"
 
 using namespace std;
@@ -139,6 +141,71 @@ map_fetch_bypass:
     return get_verdict((void *) iph, hashes, chain);
 }
 
+/* add_ip_sign - adds packet signature as an IP option
+ *  @data : packet data
+ *
+ *  @return : buffer containing modified packet; NULL on error
+ *
+ * NOTE: this function also recalculates the checksum of the layer 4 protocol
+ */
+void *add_ip_sign(uint8_t *data)
+{
+    static uint8_t mod_data[0xffff];    /* modified packet data */
+
+    const uint8_t IP_HDR_LEN  = 20;     /* base IP header length             */
+    const uint8_t SIG_OP_LEN  = 34;     /* length of our signature option    */
+    const uint8_t SIG_OP_CP   = 0x5e;   /* codepoint of our signature option */
+
+    struct iphdr *iph;                  /* IP header start          */
+    ssize_t      payload_off;           /* payload offset           */
+    size_t       padding_len;           /* length of option padding */
+    int32_t      ans;                   /* answer                   */
+
+    /* copy base IP header to modified packet buffer */
+    memmove(mod_data, data, IP_HDR_LEN);
+    iph = (struct iphdr *) mod_data;
+
+    /* calculate padding required for options section */
+    padding_len = (4 - (SIG_OP_LEN % 4)) % 4;
+
+    /* determine payload offset after introducing the new IP ops section *
+     * create said ops section by moving the payload                     *
+     * NOTE: any existing IP options are deleted                         */
+    payload_off = IP_HDR_LEN + SIG_OP_LEN + padding_len - (iph->ihl * 4);
+    memmove(mod_data + IP_HDR_LEN + SIG_OP_LEN + padding_len,
+            data + (iph->ihl * 4),
+            iph->tot_len - (iph->ihl * 4));
+
+    /* update length fields in IP header */
+    iph->ihl     = (IP_HDR_LEN + SIG_OP_LEN + padding_len) / 4;
+    iph->tot_len = htons(ntohs(iph->tot_len) + payload_off);
+
+    /* initialize option section                                         *
+     * NOTE: depending on current implementation, our option may not fit *
+     *       perfectly, so a combination of NOPs and EOL may be needed   */
+    mod_data[IP_HDR_LEN + 0] = SIG_OP_CP;   /* option codepoint */
+    mod_data[IP_HDR_LEN + 1] = SIG_OP_LEN;  /* option length    */
+
+    /* TODO: testing; change this with actual signature */
+    memset(mod_data + IP_HDR_LEN + 2, 0xff, SIG_OP_LEN - 2);
+
+    /* complete padding space (if any) with NOPs and EOL */
+    if (padding_len) {
+        memset(mod_data + IP_HDR_LEN + SIG_OP_LEN, 0x01, padding_len - 1);
+        mod_data[IP_HDR_LEN + SIG_OP_LEN + padding_len - 1] = 0x00;
+    }
+
+    /* recalculate checksums for layer 3 and layer 4 */
+    ans = ipv4_csum(iph);
+    RET(ans, NULL, "failed to recalculate L3 checksum");
+
+    ans = layer4_csum[iph->protocol](iph);
+    RET(ans, NULL, "failed to recalculate L4 checksum (proto: %u)",
+        iph->protocol);
+
+    return mod_data;
+}
+
 /******************************************************************************
  ************************** PUBLIC API IMPLEMENTATION *************************
  ******************************************************************************/
@@ -203,6 +270,7 @@ int nfq_out_handler(struct nfq_q_handle *qh,
     struct nfqnl_msg_packet_hdr *ph;        /* nfq meta header            */
     struct iphdr                *iph;       /* ip header                  */
     struct nfq_op_param         *nfq_opp;   /* nfq operational parameters */
+    void                        *mod_data;  /* modified packet buffer     */
     uint32_t                    verdict;    /* nfq verdict                */
     int32_t                     ans;        /* answer                     */
 
@@ -230,7 +298,20 @@ int nfq_out_handler(struct nfq_q_handle *qh,
         DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP");
     }
 
-    /* communicate packet verdict to nfq */
+    /* if verdict is positive, append signature option */
+    if (verdict == NF_ACCEPT) {
+        mod_data = add_ip_sign((uint8_t *) iph);
+        GOTO(!mod_data, out_unmodified, "unable to insert signature option");
+
+        iph = (struct iphdr *) mod_data;
+
+        /* communicate packet verdict to nfq, w/ signature */
+        return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict,
+                    ntohs(iph->tot_len), (const unsigned char *) mod_data);
+    }
+
+out_unmodified:
+    /* communicate packet verdict to nfq, w/o signature */
     return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
 }
 

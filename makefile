@@ -5,8 +5,7 @@ OBJ = obj
 INC = include
 
 # compilation related parameters
-# TODO: replace deprecated libcrypto calls with EVP counterparts
-CXX      = g++
+CXX      = clang++
 CXXFLAGS = -std=c++20 -ggdb
 LDFLAGS  = $(shell pkg-config --libs \
                 libnetfilter_queue   \
