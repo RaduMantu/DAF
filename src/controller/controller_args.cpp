@@ -265,7 +265,7 @@ static int32_t _parse_cidr_addr(char *str, uint32_t *addr, uint32_t *mask)
 
         /* extract network mask number from arg string */
         RET(!_isnumber(nm), EINVAL, "invalid network mask");
-        sscanf(nm, "%lu", &prefix);
+        sscanf(nm, "%hhu", &prefix);
         RET(prefix < 0 || prefix > 32, EINVAL, "invalid network mask");
     }
     /* or assume that it's /32 */
