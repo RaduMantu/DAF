@@ -1,0 +1,11 @@
+[req]
+default_bit        = 4096
+distinguished_name = req_DN
+prompt             = no
+
+[req_DN]
+countryName         = RO
+stateOrProvinceName = Bucharest
+localityName        = Bucharest
+organizationName    = UPB
+commonName          = DAF
