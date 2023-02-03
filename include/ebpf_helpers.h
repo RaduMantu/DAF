@@ -1,7 +1,7 @@
+#pragma once
+
 #include <stdio.h>      /* size_t */
 #include <stdint.h>     /* [u]int*_t */
-
-#ifndef _EBPF_TYPES_H
 
 /* event sample transmitted via ring buffer */
 struct sample {
@@ -39,6 +39,4 @@ struct sample {
 
 int process_ebpf_sample(void *ctx, void *data, size_t len);
 void ebpf_delayed_ev_handle(uint64_t delta_t);
-
-#endif
 

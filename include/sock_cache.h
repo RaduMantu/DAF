@@ -1,8 +1,7 @@
+#pragma once
+
 #include <stdint.h>         /* [u]int*_t */
 #include <unordered_set>
-
-#ifndef _SOCK_CACHE_H
-#define _SCOK_CACHE_H
 
 int32_t sc_init(void);
 void    sc_open_fd(uint32_t pid, uint8_t fd);
@@ -14,6 +13,4 @@ void    sc_dump_state(void);
 
 std::unordered_set<uint32_t> *sc_get_pid(uint8_t  protocol, uint32_t src_ip,
         uint32_t dst_ip, uint16_t src_port, uint16_t dst_port);
-
-#endif
 

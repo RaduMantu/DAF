@@ -1,8 +1,7 @@
+#pragma once
+
 #include <sys/time.h>   /* gettimeofday */
 #include <stdint.h>     /* [u]int*_t */
-
-#ifndef _PROC_EVENTS_H
-#define _PROC_EVENTS_H
 
 /* ts_event - timestamped event-related values (e.g.: pid)
  *
@@ -28,6 +27,4 @@ struct ts_event {
         return ts > x.ts;
     }
 };
-
-#endif
 

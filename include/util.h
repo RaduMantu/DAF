@@ -1,10 +1,9 @@
+#pragma ocne
+
 #include <stdio.h>      /* fprintf  */
 #include <stdlib.h>     /* exit     */
 #include <errno.h>      /* errno    */
 #include <string.h>     /* strerror */
-
-#ifndef _UTIL_H
-#define _UTIL_H
 
 /* compiler hints for branch prediciton */
 #ifndef likely
@@ -69,8 +68,6 @@
             return code;             \
         }                            \
     } while (0)
-
-#endif
 
 /* [warning] no assertion, just print */
 #define WAR(msg...)                                                 \

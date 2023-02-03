@@ -1,9 +1,7 @@
+#pragma once
+
 #include <stdint.h> /* [u]int*_t */
-
-#include <vector>   /* vector */
-
-#ifndef _FILTER_H
-#define _FILTER_H
+#include <vector>   /* vector    */
 
 /******************************************************************************
  ************************** MATCH RULE SPECIFICATION **************************
@@ -120,6 +118,4 @@ struct ctl_msg {
 uint32_t get_verdict(void *pkt, std::vector<std::vector<uint8_t *>>& maps,
             uint32_t chain);
 int32_t  flt_handle_ctl(int32_t us_csock_fd);
-
-#endif
 

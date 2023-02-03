@@ -1,10 +1,9 @@
+#pragma once
+
 #include <argp.h>       /* argp API  */
 #include <stdint.h>     /* [u]int*_t */
 
 #include "signer.h"     /* sign_t    */
-
-#ifndef _FIREWALL_ARGS_H
-#define _FIREWALL_ARGS_H
 
 /* structure holding cli arguments information */
 struct config {
@@ -24,6 +23,4 @@ struct config {
 
 extern struct argp   argp;
 extern struct config cfg;
-
-#endif  /* _FIREWALL_ARGS_H */
 
