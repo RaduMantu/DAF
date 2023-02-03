@@ -10,6 +10,7 @@
 #include <netinet/ip_icmp.h> /* icmphdr      */
 
 #include "signer.h"
+#include "csum.h"
 #include "util.h"
 
 /* disable warnings regarding designated initializers */
@@ -20,11 +21,14 @@
  ************************** INTERNAL DATA STRUCTURES **************************
  ******************************************************************************/
 
-static EVP_PKEY *key;       /* signer secret */
+static EVP_PKEY *key;           /* signer secret       */
+void *(*add_sig)(uint8_t *);    /* signature generator */
 
 /******************************************************************************
  ************************** INTERNAL HELPER FUNCTIONS *************************
  ******************************************************************************/
+
+/****************************** HMAC calculators ******************************/
 
 /* update_hmac_udp - UDP-specific HMAC update function
  *  @data   : address of IP header
@@ -124,67 +128,13 @@ update_hmac_dummy(uint8_t *data, EVP_MD_CTX *)
 }
 
 /* vtable for protocol-specific HMAC update functions */
-int32_t (*update_hmac_proto[0x100])(uint8_t *, EVP_MD_CTX *) = {
+static int32_t (*update_hmac_proto[0x100])(uint8_t *, EVP_MD_CTX *) = {
     [ 0x00 ... 0xff ] = update_hmac_dummy,
 
     [ IPPROTO_UDP  ] = update_hmac_udp,
     [ IPPROTO_TCP  ] = update_hmac_tcp,
     [ IPPROTO_ICMP ] = update_hmac_icmp,
 };
-
-/******************************************************************************
- ************************** PUBLIC API IMPLEMENTATION *************************
- ******************************************************************************/
-
-/* signer_init - signer module initializer
- *  @key_path : path to HMAC secret (can be NULL)
- *
- *  @return : 0 if everything went well; -1 on error
- */
-int32_t
-signer_init(const char *key_path)
-{
-    struct stat stat_buf;   /* file stat buffer */
-    uint8_t     *key_buf;   /* raw key buffer   */
-    int32_t     fd;         /* key file fd      */
-    int32_t     ans;        /* answer           */
-    int32_t     ret = -1;   /* function ret val */
-    ssize_t     rb;         /* read bytes       */
-
-    /* TODO: add singature type argument           *
-     *       check for NULL key_path based on that */
-
-    /* alocate temporary key buffer and read raw key */
-    fd = open(key_path, O_RDONLY);
-    RET(fd == -1, -1, "unable to open %s (%s)", key_path, strerror(errno));
-
-    ans = fstat(fd, &stat_buf);
-    GOTO(ans == -1, clean_fd, "unable to stat file (%s)", strerror(errno));
-
-    key_buf = (uint8_t *) malloc(stat_buf.st_size);
-    GOTO(!key_buf, clean_fd, "unable to allocate buffer (%s)", strerror(errno));
-
-    rb = read(fd, key_buf, stat_buf.st_size);
-    GOTO(rb == -1, clean_buf, "unable to read file (%s)", strerror(errno));
-    GOTO(rb != stat_buf.st_size, clean_buf, "unable to read entire file");
-
-    /* initialize EVP_KEY from key buffer */
-    key = EVP_PKEY_new_raw_private_key(EVP_PKEY_HMAC, NULL, key_buf,
-                                       stat_buf.st_size);
-    GOTO(!key, clean_buf, "unable to init EVP key");
-
-    /* success */
-    ret = 0;
-
-    /* cleanup */
-clean_buf:
-    free(key_buf);
-
-clean_fd:
-    close(fd);
-
-    return ret;
-}
 
 /* calc_hmac - calculates HMAC of immutable fields & payload
  *  @data    : address of IP header
@@ -194,7 +144,7 @@ clean_fd:
  *
  * NOTE: this is also used for verification
  */
-int32_t
+static int32_t
 calc_hmac(uint8_t *data, uint8_t *sig_buf)
 {
     EVP_MD_CTX   *md_ctx;    /* digest context   */
@@ -237,6 +187,172 @@ calc_hmac(uint8_t *data, uint8_t *sig_buf)
     /* cleanup */
 clean_ctx:
     EVP_MD_CTX_free(md_ctx);
+
+    return ret;
+}
+
+/**************************** Signature appenders *****************************/
+
+/* add_packet_sig - adds packet signature as an IP option
+ *  @data : address of IP header
+ *
+ *  @return : buffer containing modified packet; NULL on error
+ *
+ * NOTE: this function also recalculates the checksum of the layer 4 protocol
+ */
+static void *
+add_packet_sig(uint8_t *data)
+{
+    static uint8_t mod_data[0xffff];    /* modified packet data */
+
+    const uint8_t IP_HDR_LEN  = 20;     /* base IP header length             */
+    const uint8_t SIG_OP_LEN  = 34;     /* length of our signature option    */
+    const uint8_t SIG_OP_CP   = 0x5e;   /* codepoint of our signature option */
+
+    struct iphdr *iph;                  /* IP header start          */
+    ssize_t      payload_off;           /* payload offset           */
+    size_t       padding_len;           /* length of option padding */
+    int32_t      ans;                   /* answer                   */
+
+    /* copy base IP header to modified packet buffer */
+    memmove(mod_data, data, IP_HDR_LEN);
+    iph = (struct iphdr *) mod_data;
+
+    /* calculate padding required for options section */
+    padding_len = (4 - (SIG_OP_LEN % 4)) % 4;
+
+    /* determine payload offset after introducing the new IP ops section *
+     * create said ops section by moving the payload                     *
+     * NOTE: any existing IP options are deleted                         */
+    payload_off = IP_HDR_LEN + SIG_OP_LEN + padding_len - (iph->ihl * 4);
+    memmove(mod_data + IP_HDR_LEN + SIG_OP_LEN + padding_len,
+            data + (iph->ihl * 4),
+            iph->tot_len - (iph->ihl * 4));
+
+    /* update length fields in IP header */
+    iph->ihl     = (IP_HDR_LEN + SIG_OP_LEN + padding_len) / 4;
+    iph->tot_len = htons(ntohs(iph->tot_len) + payload_off);
+
+    /* initialize option section                                         *
+     * NOTE: depending on current implementation, our option may not fit *
+     *       perfectly, so a combination of NOPs and EOL may be needed   */
+    mod_data[IP_HDR_LEN + 0] = SIG_OP_CP;   /* option codepoint */
+    mod_data[IP_HDR_LEN + 1] = SIG_OP_LEN;  /* option length    */
+
+    /* TODO: testing; change this with actual signature */
+    memset(mod_data + IP_HDR_LEN + 2, 0xff, SIG_OP_LEN - 2);
+
+    /* complete padding space (if any) with NOPs and EOL */
+    if (padding_len) {
+        memset(mod_data + IP_HDR_LEN + SIG_OP_LEN, 0x01, padding_len - 1);
+        mod_data[IP_HDR_LEN + SIG_OP_LEN + padding_len - 1] = 0x00;
+    }
+
+    /* recalculate checksums for layer 3 and layer 4 */
+    ans = ipv4_csum(iph);
+    RET(ans, NULL, "failed to recalculate L3 checksum");
+
+    ans = layer4_csum[iph->protocol](iph);
+    RET(ans, NULL, "failed to recalculate L4 checksum (proto: %u)",
+        iph->protocol);
+
+    return mod_data;
+}
+
+/* add_dummy_sig - fake stub for no singature mode
+ *  @return : non-NULL value (to pass check)
+ */
+static void *
+add_dummy_sig(uint8_t *)
+{
+    return (void *) -1UL;
+}
+
+/* add_app_sig - adds application hash as IP option
+ *  @data : address of IP header
+ *
+ *  @return : buffer containing modified packet; NULL on error
+ *
+ * NOTE: this function also recalculates the checksum of the layer 4 protocol
+ */
+static void *
+add_app_sig(uint8_t *)
+{
+    /* TODO */
+    return NULL;
+}
+
+/******************************************************************************
+ ************************** PUBLIC API IMPLEMENTATION *************************
+ ******************************************************************************/
+
+/* signer_init - signer module initializer
+ *  @key_path : path to HMAC secret (can be NULL)
+ *
+ *  @return : 0 if everything went well; -1 on error
+ */
+int32_t
+signer_init(const char *key_path, sign_t type)
+{
+    struct stat stat_buf;   /* file stat buffer */
+    uint8_t     *key_buf;   /* raw key buffer   */
+    int32_t     fd;         /* key file fd      */
+    int32_t     ans;        /* answer           */
+    int32_t     ret = -1;   /* function ret val */
+    ssize_t     rb;         /* read bytes       */
+
+    /* set signature appender depending on signature type *
+     * TODO: add variations based on IP/TCP/UDP option    */
+    switch (type) {
+        case SIG_NONE:
+            add_sig = add_dummy_sig;
+            break;
+        case SIG_PACKET:
+            add_sig = add_packet_sig;
+            break;
+        case SIG_APP:
+            add_sig = add_app_sig;
+            break;
+        default:
+            RET(1, -1, "unknown signature type: %d", type);
+    }
+
+    /* sanity check SIG_PACKET requires key */
+    RET(!key_path && type == SIG_PACKET, -1, "specify a HMAC secret");
+
+    /* but key can be used for verification if !SIG_PACKET */
+    if (!key_path)
+        goto out;
+
+    /* alocate temporary key buffer and read raw key */
+    fd = open(key_path, O_RDONLY);
+    RET(fd == -1, -1, "unable to open %s (%s)", key_path, strerror(errno));
+
+    ans = fstat(fd, &stat_buf);
+    GOTO(ans == -1, clean_fd, "unable to stat file (%s)", strerror(errno));
+
+    key_buf = (uint8_t *) malloc(stat_buf.st_size);
+    GOTO(!key_buf, clean_fd, "unable to allocate buffer (%s)", strerror(errno));
+
+    rb = read(fd, key_buf, stat_buf.st_size);
+    GOTO(rb == -1, clean_buf, "unable to read file (%s)", strerror(errno));
+    GOTO(rb != stat_buf.st_size, clean_buf, "unable to read entire file");
+
+    /* initialize EVP_KEY from key buffer */
+    key = EVP_PKEY_new_raw_private_key(EVP_PKEY_HMAC, NULL, key_buf,
+                                       stat_buf.st_size);
+    GOTO(!key, clean_buf, "unable to init EVP key");
+
+    /* success */
+out:
+    ret = 0;
+
+    /* cleanup */
+clean_buf:
+    free(key_buf);
+
+clean_fd:
+    close(fd);
 
     return ret;
 }

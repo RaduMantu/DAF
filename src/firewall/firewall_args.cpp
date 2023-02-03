@@ -41,9 +41,6 @@ static struct argp_option options[] = {
     { NULL, 0, NULL, 0, "Core functionality" },
     { "ebpf-obj", 'e', "OBJ", 0,
       "eBPF object defining select syscall hooks" },
-    { "proc-delay", 'd', "NUM", 0,
-      "delay between receiving process exit event and handling it "
-      "(default: 50ms) [μs]" },
     { "queue-out", ARG_QUEUE_OUT, "NUM", 0,
       "netfilter queue number (default: 0)" },
     { "queue-in",  ARG_QUEUE_IN,  "NUM", 0,
@@ -52,13 +49,24 @@ static struct argp_option options[] = {
       "OUTPUT chain policy (default: ACCEPT)" },
     { "pol-in", ARG_POLICY_IN,  "VERDICT", 0,
       "INPUT chain policy (default: ACCEPT)" },
+    { "sig-type", 't', "SIG_T", 0,
+      "Type of signature (default: none)" },
+    { "sig_proto", 'p', "SIG_P", 0,
+      "Protocol to host the signature (default: ip)" },
+    { "secret", 's', "FILE", 0,
+      "Packet signing secret" },
+
 
     { NULL, 0, NULL, 0, "Performance tuning" },
+    { "proc-delay", 'd', "NUM", 0,
+      "delay between receiving process exit event and handling it "
+      "(default: 50ms) [μs]" },
     { "retain-maps", 'r', NULL, 0,
       "retain objects in set even after unmapping them (default: no)" },
     { "no-rescan",   'R', NULL, 0,
       "prevent rescanning maps if set is non-empty "
       "(default: no, implies: -r)" },
+
     { 0 }
 };
 
@@ -71,7 +79,10 @@ static char args_doc[] = "";
 /* program documentation */
 static char doc[] = "Network traffic filter that verifies identity of processes"
                     " having access to transmitting / receiving sockets"
-                    "\vVERDICT={ACCEPT|DROP}";
+                    "\v"
+                    "VERDICT={ACCEPT|DROP}\n"
+                    "SIG_T={none,packet,app}\n"
+                    "SIG_P={ip,tcp,udp}";
 
 /* declaration of relevant structures */
 struct argp   argp = { options, parse_opt, args_doc, doc };
@@ -83,6 +94,8 @@ struct config cfg  = {
     .policy_out       = NF_ACCEPT,
     .retain_maps      = 0,
     .no_rescan        = 0,
+    .sig_proto        = IPPROTO_IP,
+    .sig_type         = SIG_NONE,
 };
 
 /******************************************************************************
@@ -102,6 +115,10 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         /* ebpf object */
         case 'e':
             strncpy(cfg.ebpf_path, arg, 64);
+            break;
+        /* hmac secret */
+        case 's':
+            strncpy(cfg.secret_path, arg, 64);
             break;
         /* event processing delay */
         case 'd':
@@ -139,6 +156,30 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
                 cfg.policy_out = NF_DROP;
             else
                RET(1, EINVAL, "unknown OUTPUT policy");
+
+            break;
+        /* type of singature to include */
+        case 't':
+            if (!strcmp(arg, "none"))
+                cfg.sig_type = SIG_NONE;
+            else if (!strcmp(arg, "packet"))
+                cfg.sig_type = SIG_PACKET;
+            else if (!strcmp(arg, "app"))
+                cfg.sig_type = SIG_APP;
+            else
+                RET(1, EINVAL, "unknown signature type");
+
+            break;
+        /* protocol to host signature */
+        case 'p':
+            if (!strcmp(arg, "ip"))
+                cfg.sig_proto = IPPROTO_IP;
+            else if (!strcmp(arg, "tcp"))
+                cfg.sig_proto = IPPROTO_TCP;
+            else if (!strcmp(arg, "udp"))
+                cfg.sig_proto = IPPROTO_UDP;
+            else
+                RET(1, EINVAL, "unknown / unsupported protocol");
 
             break;
         /* retain objects in set after unmapping them */

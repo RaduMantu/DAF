@@ -40,6 +40,7 @@
 #include "sock_cache.h"
 #include "hash_cache.h"
 #include "filter.h"
+#include "signer.h"
 #include "util.h"
 
 using namespace std;
@@ -49,7 +50,6 @@ using namespace std;
 static bool bml = false;    /* break main loop */
 
 /* sigint_handler - sets <break main loop> variable to true
- *  @<redacted> : signal number; don't care to access it
  */
 static void sigint_handler(int)
 {
@@ -62,18 +62,19 @@ static void sigint_handler(int)
  *
  *  @return : 0 if everything went well
  */
-int main(int argc, char *argv[])
+int32_t
+main(int argc, char *argv[])
 {
-    int                       ans;              /* answer                     */
-    int                       netlink_fd;       /* netlink socket             */
-    int                       inotify_fd;       /* inotify file descriptor    */
-    int                       nfqueue_fd_in;    /* nfq input file descriptor  */
-    int                       nfqueue_fd_out;   /* nfq output file descriptor */
-    int                       bpf_map_fd;       /* eBPF map file descriptor   */
-    int                       epoll_fd;         /* main epoll file descriptor */
-    int                       epoll_p0_fd;      /* priority 0 (top) epoll fd  */
-    int                       epoll_p1_fd;      /* priority 1 epoll fd        */
-    int                       epoll_sel_fd;     /* selected epoll fd          */
+    int32_t                   ans;              /* answer                     */
+    int32_t                   netlink_fd;       /* netlink socket             */
+    int32_t                   inotify_fd;       /* inotify file descriptor    */
+    int32_t                   nfqueue_fd_in;    /* nfq input file descriptor  */
+    int32_t                   nfqueue_fd_out;   /* nfq output file descriptor */
+    int32_t                   bpf_map_fd;       /* eBPF map file descriptor   */
+    int32_t                   epoll_fd;         /* main epoll file descriptor */
+    int32_t                   epoll_p0_fd;      /* priority 0 (top) epoll fd  */
+    int32_t                   epoll_p1_fd;      /* priority 1 epoll fd        */
+    int32_t                   epoll_sel_fd;     /* selected epoll fd          */
     struct epoll_event        epoll_ev[2];      /* epoll events               */
     struct sigaction          act;              /* signal response action     */
     struct rlimit             rlim;             /* resource limit             */
@@ -87,7 +88,7 @@ int main(int argc, char *argv[])
     struct nfq_q_handle       *nfq_handle_out;  /* netfilter output handle    */
     struct nfq_op_param       nfq_opp;          /* nfq operational parameters */
     struct sockaddr_un        us_name;          /* unix socket name           */
-    int                       us_csock_fd;      /* unix connection socket     */
+    int32_t                   us_csock_fd;      /* unix connection socket     */
     uint8_t                   pkt_buff[0xffff]; /* nfq packet buffer          */
     char                      usr_input[256];   /* user stdin input buffer    */
     ssize_t                   rb;               /* bytes read                 */
@@ -119,6 +120,11 @@ int main(int argc, char *argv[])
     ans = hc_init(cfg.retain_maps, cfg.no_rescan);
     DIE(ans, "unable to initialize hash cache context");
     INFO("initialized hash cache context");
+
+    /* initialze packet signer context */
+    ans = signer_init(cfg.secret_path, cfg.sig_type);
+    DIE(ans, "unable to initialize packet signer context");
+    INFO("initialized packet signer context");
 
     /* create ctl unix socket */
     us_csock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
