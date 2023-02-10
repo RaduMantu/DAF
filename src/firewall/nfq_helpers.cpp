@@ -239,9 +239,12 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
         mod_data = add_sig((uint8_t *) iph);
         GOTO(!mod_data, out_unmodified, "unable to insert signature option");
 
-        iph = (struct iphdr *) mod_data;
+        /* late switch to unmodified path if dummy signer selected */
+        if (mod_data == iph)
+            goto out_unmodified;
 
         /* communicate packet verdict to nfq, w/ signature */
+        iph = (struct iphdr *) mod_data;
         return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict,
                     ntohs(iph->tot_len), (const unsigned char *) mod_data);
     }
