@@ -176,10 +176,15 @@ calc_hmac(uint8_t *data, uint8_t *sig_buf)
     ans = update_hmac_proto[iph->protocol](data, md_ctx);
     GOTO(ans, clean_ctx, "unable to update digest with L4 header & payload");
 
+    /* get amount of space required for the signature *
+     * NOTE: expect it to be 32 bytes                 */
+    ans = EVP_DigestSignFinal(md_ctx, NULL, &sig_sz);
+    GOTO(ans != 1, clean_ctx, "unable to determine signature size");
+    GOTO(sig_sz != 32, clean_ctx, "unexpected digest size: %lu", sig_sz);
+
     /* finalize hashing */
     ans = EVP_DigestSignFinal(md_ctx, sig_buf, &sig_sz);
     GOTO(ans != 1, clean_ctx, "unable to finalize digest");
-    GOTO(sig_sz != 32, clean_ctx, "unexpected digest size: %lu", sig_sz);
 
     /* success */
     ret = 0;
@@ -239,8 +244,9 @@ add_packet_sig(uint8_t *data)
     mod_data[IP_HDR_LEN + 0] = SIG_OP_CP;   /* option codepoint */
     mod_data[IP_HDR_LEN + 1] = SIG_OP_LEN;  /* option length    */
 
-    /* TODO: testing; change this with actual signature */
-    memset(mod_data + IP_HDR_LEN + 2, 0xff, SIG_OP_LEN - 2);
+    /* add HMAC of modified packet as option */
+    ans = calc_hmac(mod_data, mod_data + IP_HDR_LEN + 2);
+    RET(ans, NULL, "unable to calculate HMAC");
 
     /* complete padding space (if any) with NOPs and EOL */
     if (padding_len) {
