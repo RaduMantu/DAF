@@ -12,12 +12,16 @@ struct nfq_op_param {
 };
 
 
-int32_t nfq_out_handler(struct nfq_q_handle *qh,
-                        struct nfgenmsg     *nfmsg,
-                        struct nfq_data     *nfd,
-                        void                *data);
 int32_t nfq_in_handler(struct nfq_q_handle *qh,
                        struct nfgenmsg     *nfmsg,
                        struct nfq_data     *nfd,
                        void                *data);
+int32_t nfq_out_handler(struct nfq_q_handle *qh,
+                        struct nfgenmsg     *nfmsg,
+                        struct nfq_data     *nfd,
+                        void                *data);
+int32_t nfq_fwd_handler(struct nfq_q_handle *qh,
+                        struct nfgenmsg     *nfmsg,
+                        struct nfq_data     *nfd,
+                        void                *data);
 

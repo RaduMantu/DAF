@@ -87,6 +87,8 @@ main(int argc, char *argv[])
     struct nfq_q_handle       *nfq_handle_in;   /* netfilter input handle     */
     struct nfq_handle         *nf_handle_out;   /* NFQUEUE output handle      */
     struct nfq_q_handle       *nfq_handle_out;  /* netfilter output handle    */
+    struct nfq_handle         *nf_handle_fwd;   /* NFQUEUE forward handle     */
+    struct nfq_q_handle       *nfq_handle_fwd;  /* netfilter forward handle   */
     struct nfq_op_param       nfq_opp;          /* nfq operational parameters */
     struct sockaddr_un        us_name;          /* unix socket name           */
     int32_t                   us_csock_fd;      /* unix connection socket     */
@@ -189,7 +191,8 @@ main(int argc, char *argv[])
 
     nfq_handle_in = nfq_create_queue(nf_handle_in, cfg.queue_num_in,
                         nfq_in_handler, &nfq_opp);
-    GOTO(!nfq_handle_in, clean_nf_handle_in);
+    GOTO(!nfq_handle_in, clean_nf_handle_in,
+        "unable to bind to input nfqueue (%s)", strerror(errno));
     INFO("bound to netfilter queue: %d", cfg.queue_num_in);
 
     ans = nfq_set_mode(nfq_handle_in, NFQNL_COPY_PACKET, sizeof(pkt_buff));
@@ -220,9 +223,31 @@ main(int argc, char *argv[])
     nfqueue_fd_out = nfq_fd(nf_handle_out);
     INFO("obtained file descriptor of associated nfq output socket");
 
+    /* prepare forward NFQ (optional) */
+    if (cfg.fwd_validate) {
+        nf_handle_fwd = nfq_open();
+        GOTO(!nf_handle_fwd, clean_nf_queue_out,
+             "unable to open input nfq handle (%s)", strerror(errno));
+        INFO("opened forward nfq handle");
+
+        nfq_handle_fwd = nfq_create_queue(nf_handle_fwd, cfg.queue_num_fwd,
+                            nfq_fwd_handler, &nfq_opp);
+        GOTO(!nfq_handle_fwd, clean_nf_handle_fwd,
+             "unable to bind to forward nfqueue (%s)", strerror(errno));
+        INFO("bound to netfilter queue: %d", cfg.queue_num_fwd);
+
+        ans = nfq_set_mode(nfq_handle_fwd, NFQNL_COPY_PACKET, sizeof(pkt_buff));
+        GOTO(ans < 0, clean_nf_queue_fwd, "unable to set forward nfq mode (%s)",
+            strerror(errno));
+        INFO("configured nfq forward packet handling parameters");
+
+        nfqueue_fd_fwd = nfq_fd(nf_handle_fwd);
+        INFO("obtained file descriptor of associated nfq forward socket");
+    }
+
     /* create top level epoll instance */
     epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    GOTO(epoll_fd == -1, clean_nf_queue_out, "failed to create epoll instance (%s)",
+    GOTO(epoll_fd == -1, clean_nf_queue_fwd, "failed to create epoll instance (%s)",
         strerror(errno));
     INFO("top level epoll instance created");
 
@@ -281,7 +306,7 @@ main(int argc, char *argv[])
     GOTO(ans == -1, clean_epoll_fd_p1,
         "failed to add netfilter input queue to epoll-p1 monitor (%s)",
         strerror(errno));
-    INFO("netfilter input queue added to epoll monitor");
+    INFO("netfilter input queue added to epoll-p1 monitor");
 
     /* add output netfilter queue to epoll watchlist (bottom prio) */
     epoll_ev[0].data.fd = nfqueue_fd_out;
@@ -291,7 +316,20 @@ main(int argc, char *argv[])
     GOTO(ans == -1, clean_epoll_fd_p1,
         "failed to add netfilter output queue to epoll-p1 monitor (%s)",
         strerror(errno));
-    INFO("netfilter output queue added to epoll monitor");
+    INFO("netfilter output queue added to epoll-p1 monitor");
+
+    /* add forward netfilter queue to epoll watchlist (bottom prio) */
+    if (cfg.fwd_validate) {
+        epoll_ev[0].data.fd = nfqueue_fd_fwd;
+        epoll_ev[0].events  = EPOLLIN;
+
+        ans = epoll_ctl(epoll_p1_fd, EPOLL_CTL_ADD, nfqueue_fd_fwd,
+                &epoll_ev[0]);
+        GOTO(ans == -1, clean_epoll_fd_p1,
+             "failed to add netfilter forward queue to epoll-p1 monitor (%s)",
+             strerror(errno));
+        INFO("netfilter forward queue added to epoll-p1 monitor");
+    }
 
     /* add stdin to epoll watchlist (bottom prio) */
     epoll_ev[0].data.fd = STDIN_FILENO;
@@ -391,6 +429,15 @@ main(int argc, char *argv[])
             }
 
             nfq_handle_packet(nf_handle_in, (char *) pkt_buff, rb);
+        } else if (epoll_ev[0].data.fd == nfqueue_fd_fwd) {
+            rb = read(nfqueue_fd_in, pkt_buff, sizeof(pkt_buff));
+            if(rb == -1) {
+                WAR("failed to read packet from nf queue (%s)",
+                    strerror(errno));
+                continue;
+            }
+
+            nfq_handle_packet(nf_handle_fwd, (char *) pkt_buff, rb);
         } else if (epoll_ev[0].data.fd == STDIN_FILENO) {
             rb = read(STDIN_FILENO, usr_input, sizeof(usr_input));
             if(rb == -1) {
@@ -430,6 +477,19 @@ clean_epoll_fd:
     ans = close(epoll_fd);
     ALERT(ans == -1, "failed to close epoll instance (%s)", strerror(errno));
     INFO("closed top level epoll instance");
+
+clean_nf_queue_fwd:
+    /* bypass cleanup if FORWARD intercept not used */
+    if (!cfg.fwd_validate)
+        goto clean_nf_queue_out;
+
+    nfq_destroy_queue(nfq_handle_fwd);
+    INFO("destroyed netfilter forward queue");
+
+clean_nf_handle_fwd:
+    ans = nfq_close(nf_handle_fwd);
+    ALERT(ans, "failed to close nfq forward handle");
+    INFO("closed nfq forward handle");
 
 clean_nf_queue_out:
     nfq_destroy_queue(nfq_handle_out);

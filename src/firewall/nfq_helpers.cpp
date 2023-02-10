@@ -254,3 +254,20 @@ out_unmodified:
     return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
 }
 
+/* nfq_fwd_handler - output chain callback routine for NetfilterQueue
+ *  @qh    : netfilter queue handle
+ *  @nfmsg : general form of address family dependent message
+ *  @nfd   : nfq related data for packet evaluation
+ *  @data  : data parameter passed unchanged by nfq_create_queue()
+ *
+ *  @return : 0 if ok, -1 on error (handled by nfq_set_verdict())
+ */
+int32_t nfq_fwd_handler(struct nfq_q_handle *qh,
+                    struct nfgenmsg         *nfmsg,
+                    struct nfq_data         *nfd,
+                    void                    *data)
+{
+    /* TODO */
+
+    return 0;
+}
