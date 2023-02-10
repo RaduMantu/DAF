@@ -70,6 +70,7 @@ main(int argc, char *argv[])
     int32_t                   inotify_fd;       /* inotify file descriptor    */
     int32_t                   nfqueue_fd_in;    /* nfq input file descriptor  */
     int32_t                   nfqueue_fd_out;   /* nfq output file descriptor */
+    int32_t                   nfqueue_fd_fwd;   /* nfq fwd file descriptor    */
     int32_t                   bpf_map_fd;       /* eBPF map file descriptor   */
     int32_t                   epoll_fd;         /* main epoll file descriptor */
     int32_t                   epoll_p0_fd;      /* priority 0 (top) epoll fd  */
@@ -180,47 +181,42 @@ main(int argc, char *argv[])
     nfq_opp.policy_in  = cfg.policy_in;
     nfq_opp.policy_out = cfg.policy_out;
 
-    /* open input netfilter queue handle */
+    /* prepare input NFQ */
     nf_handle_in = nfq_open();
     GOTO(!nf_handle_in, clean_bpf_rb,
         "unable to open input nfq handle (%s)", strerror(errno));
     INFO("opened input nfq handle");
 
-    /* bind nfq input handler to queue */
     nfq_handle_in = nfq_create_queue(nf_handle_in, cfg.queue_num_in,
                         nfq_in_handler, &nfq_opp);
     GOTO(!nfq_handle_in, clean_nf_handle_in);
     INFO("bound to netfilter queue: %d", cfg.queue_num_in);
 
-    /* open output netfilter queue handle */
+    ans = nfq_set_mode(nfq_handle_in, NFQNL_COPY_PACKET, sizeof(pkt_buff));
+    GOTO(ans < 0, clean_nf_queue_in, "unable to set input nfq mode (%s)",
+        strerror(errno));
+    INFO("configured nfq input packet handling parameters");
+
+    nfqueue_fd_in = nfq_fd(nf_handle_in);
+    INFO("obtained file descriptor of associated nfq output socket");
+
+    /* prepare output NFQ */
     nf_handle_out = nfq_open();
-    GOTO(!nf_handle_out, clean_nf_queue_in,
+    GOTO(!nf_handle_out, clean_nf_handle_out,
         "unable to open output nfq handle (%s)", strerror(errno));
     INFO("opened output nfq handle");
 
-    /* bind nfq output handler to queue */
     nfq_handle_out = nfq_create_queue(nf_handle_out, cfg.queue_num_out,
                         nfq_out_handler, &nfq_opp);
     GOTO(!nfq_handle_out, clean_nf_handle_out,
         "unable to bind to output nfqueue (%s)", strerror(errno));
     INFO("bound to netfilter queue: %d", cfg.queue_num_out);
 
-    /* set amount of data to be copied to userspace (max ip packet size) */
-    ans = nfq_set_mode(nfq_handle_in, NFQNL_COPY_PACKET, sizeof(pkt_buff));
-    GOTO(ans < 0, clean_nf_handle_in, "unable to set input nfq mode (%s)",
-        strerror(errno));
-    INFO("configured nfq input packet handling parameters");
-
     ans = nfq_set_mode(nfq_handle_out, NFQNL_COPY_PACKET, sizeof(pkt_buff));
-    GOTO(ans < 0, clean_nf_handle_out, "unable to set output nfq mode (%s)",
+    GOTO(ans < 0, clean_nf_queue_out, "unable to set output nfq mode (%s)",
         strerror(errno));
     INFO("configured nfq output packet handling parameters");
 
-    /* obtain fd of input queue handle's associated socket */
-    nfqueue_fd_in = nfq_fd(nf_handle_in);
-    INFO("obtained file descriptor of associated nfq output socket");
-
-    /* obtain fd of output queue handle's associated socket */
     nfqueue_fd_out = nfq_fd(nf_handle_out);
     INFO("obtained file descriptor of associated nfq output socket");
 
@@ -409,7 +405,6 @@ main(int argc, char *argv[])
     WAR("exited main loop");
 
 clean_bpf_links:
-    /* unlink existing programs */
     for (auto& bpf_link : bpf_links) {
         ans = bpf_link__destroy(bpf_link);
         ALERT(ans, "failed to destroy eBPF link");
@@ -417,7 +412,6 @@ clean_bpf_links:
     }
 
 clean_netlink_sub:
-    /* unsubscribe from netlink proc events */
     ans = nl_proc_ev_subscribe(netlink_fd, false);
     ALERT(ans == -1, "failed to unsubscribe from netlink proc events");
     INFO("unsubscribed from netlink proc events");
@@ -433,7 +427,6 @@ clean_epoll_fd_p0:
     INFO("closed epoll-p0 instance");
 
 clean_epoll_fd:
-    /* close epoll instance */
     ans = close(epoll_fd);
     ALERT(ans == -1, "failed to close epoll instance (%s)", strerror(errno));
     INFO("closed top level epoll instance");
@@ -457,7 +450,6 @@ clean_nf_handle_in:
     INFO("closed nfq output handle");
 
 clean_bpf_rb:
-    /* free eBPF ringbuffer */
     ring_buffer__free(bpf_ringbuf);
     INFO("freed eBPF ringbuffer");
 
@@ -466,19 +458,16 @@ clean_bpf_obj:
     INFO("closed eBPF object");
 
 clean_inotify_fd:
-    /* close inotify instance */
     ans = close(inotify_fd);
     ALERT(ans == -1, "failed to close inotify instance (%s)", strerror(errno));
     INFO("closed inotify instance");
 
 clean_netlink_fd:
-    /* close netlink instance */
     ans = close(netlink_fd);
     ALERT(ans == -1, "failed to close netlink instance (%s)", strerror(errno));
     INFO("closed netlink instance");
 
 clean_us_csock_fd:
-    /* close & unlink ctl unix socket */
     ans = close(us_csock_fd);
     ALERT(ans == -1, "failed to close ctl unix socket (%s)", strerror(errno));
     INFO("closed ctl unix socket");

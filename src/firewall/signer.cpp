@@ -266,12 +266,12 @@ add_packet_sig(uint8_t *data)
 }
 
 /* add_dummy_sig - fake stub for no singature mode
- *  @return : non-NULL value (to pass check)
+ *  @return : return original packet buffer as modified packet
  */
 static void *
-add_dummy_sig(uint8_t *)
+add_dummy_sig(uint8_t *data)
 {
-    return (void *) -1UL;
+    return (void *) data;
 }
 
 /* add_app_sig - adds application hash as IP option
@@ -328,7 +328,7 @@ signer_init(const char *key_path, sign_t type)
 
     /* but key can be used for verification if !SIG_PACKET */
     if (!key_path)
-        goto out;
+        return 0;
 
     /* alocate temporary key buffer and read raw key */
     fd = open(key_path, O_RDONLY);
@@ -350,7 +350,6 @@ signer_init(const char *key_path, sign_t type)
     GOTO(!key, clean_buf, "unable to init EVP key");
 
     /* success */
-out:
     ret = 0;
 
     /* cleanup */

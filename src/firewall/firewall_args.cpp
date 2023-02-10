@@ -30,10 +30,11 @@ const char *argp_program_bug_address = "<andru.mantu@gmail.com>";
 
 /* argument identifiers with no shorthand */
 enum {
-    ARG_QUEUE_IN   = 600,   /* input netfilter queue number    */
-    ARG_QUEUE_OUT  = 601,   /* output netfilter queue number   */
-    ARG_POLICY_IN  = 602,   /* INPUT chain default policy      */
-    ARG_POLICY_OUT = 603,   /* OUTPUT chain default policy     */
+    ARG_QUEUE_IN   = 600,   /* input netfilter queue number   */
+    ARG_QUEUE_OUT  = 601,   /* output netfilter queue number  */
+    ARG_QUEUE_FWD  = 602,   /* forward netfilter queue number */
+    ARG_POLICY_IN  = 700,   /* INPUT chain default policy     */
+    ARG_POLICY_OUT = 701,   /* OUTPUT chain default policy    */
 };
 
 /* command line arguments */
@@ -45,6 +46,8 @@ static struct argp_option options[] = {
       "netfilter queue number (default: 0)" },
     { "queue-in",  ARG_QUEUE_IN,  "NUM", 0,
       "netfilter queue number (default: 1)" },
+    { "queue-fwd", ARG_QUEUE_FWD, "NUM", 0,
+      "netfilter queue number (default: 2)" },
     { "pol-out", ARG_POLICY_OUT, "VERDICT", 0,
       "OUTPUT chain policy (default: ACCEPT)" },
     { "pol-in", ARG_POLICY_IN,  "VERDICT", 0,
@@ -55,6 +58,8 @@ static struct argp_option options[] = {
       "Protocol to host the signature (default: ip)" },
     { "secret", 's', "FILE", 0,
       "Packet signing secret" },
+    { "fwd-val", 'f', NULL, 0,
+      "Validate signature on FORWARD chain (default: no)" },
 
 
     { NULL, 0, NULL, 0, "Performance tuning" },
@@ -80,6 +85,8 @@ static char args_doc[] = "";
 static char doc[] = "Network traffic filter that verifies identity of processes"
                     " having access to transmitting / receiving sockets"
                     "\v"
+                    "NOTE: without '-f', the FORWARD queue is not used\n"
+                    "\n"
                     "VERDICT={ACCEPT|DROP}\n"
                     "SIG_T={none,packet,app}\n"
                     "SIG_P={ip,tcp,udp}";
@@ -87,13 +94,16 @@ static char doc[] = "Network traffic filter that verifies identity of processes"
 /* declaration of relevant structures */
 struct argp   argp = { options, parse_opt, args_doc, doc };
 struct config cfg  = {
+    .secret_path      = NULL,
     .proc_delay       = 50'000,
     .queue_num_in     = 1,
     .queue_num_out    = 0,
+    .queue_num_fwd    = 2,
     .policy_in        = NF_ACCEPT,
     .policy_out       = NF_ACCEPT,
     .retain_maps      = 0,
     .no_rescan        = 0,
+    .fwd_validate     = 0,
     .sig_proto        = IPPROTO_IP,
     .sig_type         = SIG_NONE,
 };
@@ -118,7 +128,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             break;
         /* hmac secret */
         case 's':
-            strncpy(cfg.secret_path, arg, 64);
+            cfg.secret_path = strdup(arg);
             break;
         /* event processing delay */
         case 'd':
@@ -135,6 +145,10 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         /* netfilter output queue number */
         case ARG_QUEUE_OUT:
             sscanf(arg, "%hu", &cfg.queue_num_out);
+            break;
+        /* netfilter forward queue number */
+        case ARG_QUEUE_FWD:
+            sscanf(arg, "%hu", &cfg.queue_num_fwd);
             break;
         /* INPUT chain policy */
         case ARG_POLICY_IN:
@@ -181,6 +195,10 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             else
                 RET(1, EINVAL, "unknown / unsupported protocol");
 
+            break;
+        /* validate signatures on forward chain */
+        case 'f':
+            cfg.fwd_validate = 1;
             break;
         /* retain objects in set after unmapping them */
         case 'r':
