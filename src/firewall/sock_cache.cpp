@@ -524,10 +524,13 @@ unordered_set<uint32_t> *sc_get_pid(uint8_t  protocol,
     }
    /* slow path: find socket via netlink diagnostics */
     else {
-        /* look up inode of socket with given filtering criteria */
+        /* look up inode of socket with given filtering criteria *
+         * NOTE: misses here can be common; make it less verbose *
+         * TODO: might be interesting to add a counter here      */
         ans = nl_sock_diag(nsd_fd, protocol, src_ip, dst_ip, src_port,
                 dst_port, &inode);
-        RET(ans, NULL, "unable to find exact socket match (inode: %u)", inode);
+        if (ans)
+            return NULL;
 
         /* update internal structures */
         port_to_sock[src_port] = inode;
