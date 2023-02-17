@@ -38,6 +38,7 @@
 
 using namespace std;
 
+
 /******************************************************************************
  ************************** INTERNAL HELPER FUNCTIONS *************************
  ******************************************************************************/
@@ -70,6 +71,10 @@ uint32_t _chain_common_filter(struct iphdr *iph, uint32_t chain)
     uint8_t                   *md;          /* pointer to digest buffer   */
     size_t                    pid_idx;      /* index of analyzed pid      */
     int32_t                   ans;          /* answer                     */
+
+    /* bypass map fetch if FORWARD chain is involved */
+    if (chain == FORWARD_CHAIN)
+        goto map_fetch_bypass;
 
     /* extract layer 3 features (for readablity & ease of access) */
     src_ip   = iph->saddr;
@@ -267,7 +272,37 @@ int32_t nfq_fwd_handler(struct nfq_q_handle *qh,
                     struct nfq_data         *nfd,
                     void                    *data)
 {
-    /* TODO */
+    struct nfqnl_msg_packet_hdr *ph;        /* nfq meta header            */
+    struct iphdr                *iph;       /* ip header                  */
+    struct nfq_op_param         *nfq_opp;   /* nfq operational parameters */
+    uint32_t                    verdict;    /* nfq verdict                */
+    int32_t                     ans;        /* answer                     */
 
-    return 0;
+    /* cast reference to nfq operational parameters */
+    nfq_opp = (struct nfq_op_param *) data;
+
+    /* get nfq packet header (w/ metadata) */
+    ph = nfq_get_msg_packet_hdr(nfd);
+    RET(!ph, -1, "Unable to retrieve packet meta hdr (%s)", strerror(errno));
+
+    /* extract raw packet */
+    ans = nfq_get_payload(nfd, (uint8_t **) &iph);
+    RET(ans == -1, -1, "Unable to retrieve packet data (%s)", strerror(errno));
+    RET(ans != ntohs(iph->tot_len), -1, "Payload size & total len mismatch");
+
+    /* process any delayed events that have timed out */
+    nl_delayed_ev_handle(nfq_opp->proc_delay);
+    ebpf_delayed_ev_handle(nfq_opp->proc_delay);
+
+    /* get verdict for current packet or use default policy */
+    verdict = _chain_common_filter(iph, FORWARD_CHAIN);
+    if (verdict == NF_MAX_VERDICT + 1) {
+        verdict = nfq_opp->policy_fwd;
+    } else {
+        DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP");
+    }
+
+    /* communicate packet verdict to nfq, w/o signature */
+    return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
 }
+

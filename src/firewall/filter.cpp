@@ -33,6 +33,7 @@
 #include <string>               /* string        */
 
 #include "filter.h"
+#include "signer.h"
 #include "util.h"
 
 using namespace std;
@@ -43,6 +44,10 @@ using namespace std;
 
 static vector<struct flt_crit> input_chain;
 static vector<struct flt_crit> output_chain;
+
+/* operational parameters */
+uint8_t validate_input;     /* validate signature on INPUT chain   */
+uint8_t validate_forward;   /* validate signature on FORWARD chain */
 
 /******************************************************************************
  ************************** INTERNAL HELPER FUNCTIONS *************************
@@ -93,6 +98,21 @@ _send_chain(int32_t us_dsock_fd, vector<struct flt_crit>& chain)
  ************************** PUBLIC API IMPLEMENTATION *************************
  ******************************************************************************/
 
+/* filter_init - initializes filter internal structures
+ *  @val_fwd : validate signature on FORWARD chain
+ *  @val_in  : validate signature on INPUT chain
+ *
+ *  @return : 0 if everything went well
+ */
+int32_t
+filter_init(uint8_t val_fwd, uint8_t val_in)
+{
+    validate_forward = val_fwd;
+    validate_input   = val_in;
+
+    return 0;
+}
+
 /* get_verdict - establishes accept / drop verdict for packet
  *  @pkt    : packet buffer
  *  @maps   : vector of hashes for memory mapped objects, for each process
@@ -113,6 +133,7 @@ uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
     struct tcphdr           *tcph;          /* tch header                    */
     struct udphdr           *udph;          /* udp header                    */
     uint8_t                 matched;        /* matching object was found     */
+    uint8_t                 *data;          /* easy byte-sized access to pkt */
     int32_t                 ans;            /* answer                        */
 
     /* get reference to correct chain */
@@ -120,13 +141,58 @@ uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
         sel_chain = &input_chain;
     else if (chain == OUTPUT_CHAIN)
         sel_chain = &output_chain;
-    else {
-        WAR("invalid chain identifier");
-        return NF_MAX_VERDICT + 1;
-    }
+    else
+        RET(1, NF_MAX_VERDICT + 1, "invalid chain identifier");
 
     /* cast packet buffer to iphdr */
-    iph = (struct iphdr *) pkt;
+    iph  = (struct iphdr *) pkt;
+    data = (uint8_t *) pkt;
+
+    /* for now FORWARD chain does not accept rules      *
+     * using it only for potential signature validation *
+     * TODO: add support for rules on FORWARD chain     *
+     *       deduplicate the code below                 */
+    if (chain == FORWARD_CHAIN) {
+        if (validate_forward) {
+            /* drop if no options (and signature) available  *
+             * NOTE: at the moment, checking only L3 options */
+            if (iph->ihl == 5)
+                return NF_DROP;
+
+            /* check if option is our singature                *
+             * NOTE: for now, assuming ours is the only option */
+            if (data[20] != SIG_OP_CP)
+                return NF_DROP;
+
+            /* check signature itself */
+            ans = verify_hmac(data, &data[22]);
+            RET(ans == -1, NF_MAX_VERDICT + 1, "unable to verify signature");
+            if (ans == 0)
+                return NF_DROP;
+        }
+
+        /* no other rules to check; ACCEPT by default */
+        return NF_ACCEPT;
+    }
+
+    /* verify signatures if required */
+    if (chain == INPUT_CHAIN && validate_input) {
+        /* drop if no options (and signature) available  *
+         * NOTE: at the moment, checking only L3 options */
+        if (iph->ihl == 5)
+            return NF_DROP;
+
+        /* check if option is our singature                *
+         * NOTE: for now, assuming ours is the only option */
+        if (data[20] != SIG_OP_CP)
+            return NF_DROP;
+
+        /* check signature itself */
+        ans = verify_hmac(data, &data[22]);
+        RET(ans == -1, NF_MAX_VERDICT + 1, "unable to verify signature");
+        if (ans == 0)
+            return NF_DROP;
+    }
 
     /* for each rule in chain */
     for (auto& rule : *sel_chain) {
@@ -456,3 +522,4 @@ clean_data_socket:
 
     return 0;
 }
+

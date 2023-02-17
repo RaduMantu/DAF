@@ -212,7 +212,6 @@ add_packet_sig(uint8_t *data)
 
     const uint8_t IP_HDR_LEN  = 20;     /* base IP header length             */
     const uint8_t SIG_OP_LEN  = 34;     /* length of our signature option    */
-    const uint8_t SIG_OP_CP   = 0x5e;   /* codepoint of our signature option */
 
     struct iphdr *iph;                  /* IP header start          */
     ssize_t      payload_off;           /* payload offset           */

@@ -114,6 +114,11 @@ main(int argc, char *argv[])
     DIE(ans == -1, "unable to set resource limit (%s)", strerror(errno));
     INFO("set new resource limits");
 
+    /* initialize packet filter settings */
+    ans = filter_init(cfg.fwd_validate, cfg.in_validate);
+    DIE(ans, "unable to initialize filter");
+    INFO("initialized filter");
+
     /* initialize socket cache context */
     ans = sc_init();
     DIE(ans, "unable to initialize socket cache context");
@@ -182,6 +187,7 @@ main(int argc, char *argv[])
     nfq_opp.proc_delay = cfg.proc_delay;
     nfq_opp.policy_in  = cfg.policy_in;
     nfq_opp.policy_out = cfg.policy_out;
+    nfq_opp.policy_fwd = cfg.policy_fwd;
 
     /* prepare input NFQ */
     nf_handle_in = nfq_open();

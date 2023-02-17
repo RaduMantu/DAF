@@ -35,6 +35,7 @@ enum {
     ARG_QUEUE_FWD  = 602,   /* forward netfilter queue number */
     ARG_POLICY_IN  = 700,   /* INPUT chain default policy     */
     ARG_POLICY_OUT = 701,   /* OUTPUT chain default policy    */
+    ARG_POLICY_FWD = 702,   /* FORWARD chain default policy   */
 };
 
 /* command line arguments */
@@ -52,6 +53,8 @@ static struct argp_option options[] = {
       "OUTPUT chain policy (default: ACCEPT)" },
     { "pol-in", ARG_POLICY_IN,  "VERDICT", 0,
       "INPUT chain policy (default: ACCEPT)" },
+    { "pol-fwd", ARG_POLICY_FWD, "VERDICT", 0,
+      "FORWARD chain policy (default: ACCEPT)" },
     { "sig-type", 't', "SIG_T", 0,
       "Type of signature (default: none)" },
     { "sig_proto", 'p', "SIG_P", 0,
@@ -60,7 +63,8 @@ static struct argp_option options[] = {
       "Packet signing secret" },
     { "fwd-val", 'f', NULL, 0,
       "Validate signature on FORWARD chain (default: no)" },
-
+    { "in-val", 'i', NULL, 0,
+      "Validate signature on INPUT chain (default: no)" },
 
     { NULL, 0, NULL, 0, "Performance tuning" },
     { "proc-delay", 'd', "NUM", 0,
@@ -101,9 +105,11 @@ struct config cfg  = {
     .queue_num_fwd    = 2,
     .policy_in        = NF_ACCEPT,
     .policy_out       = NF_ACCEPT,
+    .policy_fwd       = NF_ACCEPT,
     .retain_maps      = 0,
     .no_rescan        = 0,
     .fwd_validate     = 0,
+    .in_validate      = 0,
     .sig_proto        = IPPROTO_IP,
     .sig_type         = SIG_NONE,
 };
@@ -172,6 +178,17 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
                RET(1, EINVAL, "unknown OUTPUT policy");
 
             break;
+        /* FORWARD chain policy */
+        case ARG_POLICY_FWD:
+            /* extract policy verdict from arg string */
+            if (!strcmp(arg, "ACCEPT"))
+                cfg.policy_fwd = NF_ACCEPT;
+            else if (!strcmp(arg, "DROP"))
+                cfg.policy_fwd = NF_DROP;
+            else
+               RET(1, EINVAL, "unknown FORWARD policy");
+
+            break;
         /* type of singature to include */
         case 't':
             if (!strcmp(arg, "none"))
@@ -199,6 +216,10 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         /* validate signatures on forward chain */
         case 'f':
             cfg.fwd_validate = 1;
+            break;
+        /* validate signatures on input chain */
+        case 'i':
+            cfg.in_validate = 1;
             break;
         /* retain objects in set after unmapping them */
         case 'r':
