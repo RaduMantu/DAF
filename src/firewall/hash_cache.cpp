@@ -17,14 +17,15 @@
  * along with app-fw. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <stdio.h>          /* fopen, fclose        */
-#include <openssl/sha.h>    /* SHA256_DIGEST_LENGTH */
-#include <openssl/evp.h>    /* EVP_*                */
-#include <fcntl.h>          /* open                 */
-#include <unistd.h>         /* close                */
-#include <stdlib.h>         /* malloc               */
-#include <sys/stat.h>       /* fstat                */
-#include <sys/mman.h>       /* mmap, munmap         */
+#include <stdio.h>              /* fopen, fclose        */
+#include <openssl/sha.h>        /* SHA256_DIGEST_LENGTH */
+#include <openssl/evp.h>        /* EVP_*                */
+#include <fcntl.h>              /* open                 */
+#include <unistd.h>             /* close                */
+#include <stdlib.h>             /* malloc               */
+#include <sys/stat.h>           /* fstat                */
+#include <sys/mman.h>           /* mmap, munmap         */
+#include <libmount/libmount.h>  /* mnt_{table,fs}_*     */
 
 #include <unordered_map>    /* unordered_map */
 #include <unordered_set>    /* unordered_set */
@@ -133,6 +134,91 @@ clean_fd:
     return retval;
 }
 
+/* get_rootfs_mp - get process rootfs mount point if running in different ns
+ *  @pid        : target process id
+ *  @root_mount : reference to process rootfs relative mount point string
+ *
+ *  @return :  0 if overlay rootfs mount point was found
+ *             1 if it wasn't (but not due to an error)
+ *            -1 on error
+ *
+ * NOTE: this function is implemented strictly for identifying the merged
+ *       rootfs mountpoint of docker containers
+ * TODO: consider adding support for chroot jails
+ */
+static int32_t
+get_rootfs_mp(uint32_t pid, string &root_mount)
+{
+    char                mntinf_path[256];   /* patht to /proc/<pid>/mntinfo */
+    const char          *fs_ops;            /* filesystem options string    */
+    struct libmnt_table *table;             /* mount table abstraction      */
+    struct libmnt_fs    *fs;                /* table entry filesystem       */
+    struct libmnt_iter  *itr;               /* table iterator               */
+    ssize_t             wb;                 /* number of written bytes      */
+    int32_t             ans;                /* answer                       */
+    int32_t             ret = -1;           /* return value                 */
+
+    /* create path to mountinfo file */
+    wb = snprintf(mntinf_path, sizeof(mntinf_path), "/proc/%u/mountinfo", pid);
+    ALERT(wb == sizeof(mntinf_path), "consider increasing buffer size");
+
+    /* allocate and initialize mount table from file contents */
+    table = mnt_new_table_from_file(mntinf_path);
+    RET(!table, -1, "unable to initialize mount table from %s", mntinf_path);
+
+    /* allocate table entry iterator */
+    itr = mnt_new_iter(MNT_ITER_FORWARD);
+    GOTO(!itr, clean_table, "unable to allocate iterator");
+
+    /* for each mount table entry             *
+     * NOTE: the rootfs entry should be first */
+    while (0 == mnt_table_next_fs(table, itr, &fs)) {
+        /* ignore any entry whose target is not "/"       *
+         * ignore any entry whose source is not "overlay" */
+        if (strcmp(mnt_fs_get_target(fs), "/")
+        ||  strcmp(mnt_fs_get_source(fs), "overlay"))
+        {
+            continue;
+        }
+
+        /* get filesystem options string to extract mountpoint */
+        fs_ops = mnt_fs_get_options(fs);
+        GOTO(!fs_ops, clean_iter, "unable to extract filesystem options");
+
+        /* what we're interested in is the merged directory of the upper *
+         * overlay; the mountpoint we identify here is bound to the diff *
+         * directory in stead                                            */
+        char *upper_start = (char *) strstr(fs_ops, "upper=");
+        GOTO(!upper_start, clean_iter, "unable to find \"upper\" parameter");
+        upper_start += strlen("upper=");
+
+        char *upper_stop = (char *) strstr(upper_start, "/diff,");
+        GOTO(!upper_stop, clean_iter, "unable to find end of \"upper\"");
+
+        root_mount = string(upper_start, 0, upper_stop - upper_start)
+                     + "/merged";
+
+        /* success */
+        ret = 0;
+        goto clean_iter;
+    }
+
+    /* no mountpoint found to match our criteria; but that's ok */
+    root_mount = "";
+    ret = 1;
+
+    /* cleanup */
+clean_iter:
+    mnt_free_iter(itr);
+
+clean_table:
+    mnt_free_table(table);
+
+    DEBUG("pid=%u ret=%d root=%s", pid, ret, root_mount.c_str());
+
+    return ret;
+}
+
 /******************************************************************************
  ************************** PUBLIC API IMPLEMENTATION *************************
  ******************************************************************************/
@@ -173,18 +259,19 @@ uint8_t *hc_get_sha256(char *path)
  */
 set<string> hc_get_maps(uint32_t pid)
 {
-    static char   *buff = NULL;   /* buffer for contents of /proc/<pid>/maps */
-    static size_t buff_sz = 0;    /* buffer size                             */
-    size_t        trb;            /* total number of read bytes              */
-    ssize_t       rb;             /* number of read bytes                    */
-    ssize_t       wb;             /* number of written bytes                 */
-    int32_t       ans;            /* answer                                  */
-    int32_t       maps_fd;        /* /proc/<pid>/maps file descriptor        */
-    char          *tit;           /* string token iterator                   */
-    char          is_x;           /* 'x' if executable; '-' otherwise        */
-    char          obj_path[256];  /* filesystem path to memory-mapped object */
-    char          maps_path[256]; /* path to /proc/<pid>/maps                */
-    unordered_set<string> lms;    /* local maps set                          */
+    static char   *buff = NULL;    /* buffer for contents of /proc/<pid>/maps */
+    static size_t buff_sz = 0;     /* buffer size                             */
+    size_t        trb;             /* total number of read bytes              */
+    ssize_t       rb;              /* number of read bytes                    */
+    ssize_t       wb;              /* number of written bytes                 */
+    int32_t       ans;             /* answer                                  */
+    int32_t       maps_fd;         /* /proc/<pid>/maps file descriptor        */
+    char          *tit;            /* string token iterator                   */
+    char          is_x;            /* 'x' if executable; '-' otherwise        */
+    char          obj_path[256];   /* filesystem path to memory-mapped object */
+    char          maps_path[256];  /* path to /proc/<pid>/maps                */
+    string        root_mount;      /* namespace rootfs mountpoint             */
+    unordered_set<string> lms;     /* local maps set                          */
 
     /* depending on maps retention policy, get reference to working set      *
      * updates to rs will not affect global context --> old maps don't count */
@@ -237,6 +324,12 @@ set<string> hc_get_maps(uint32_t pid)
     /* this should be impossible... */
     GOTO(unlikely(!trb), create_ordered_set, "file %s was empty!?", maps_path);
 
+    /* in case the process runs in a mount namespace, try finding prefix *
+     * of its rootfs mount point according to our view of the entire     *
+     * filesystem                                                        */
+    ans = get_rootfs_mp(pid, root_mount);
+    GOTO(ans == -1, create_ordered_set, "error getting rootfs mountpoint");
+
     /* replace final '\n' in /proc/<pid>/maps with '\0' for next step */
     buff[trb - 1] = '\0';
 
@@ -257,8 +350,8 @@ set<string> hc_get_maps(uint32_t pid)
             continue;
         }
 
-        /* add object path to return set */
-        objs.insert(string(obj_path));
+        /* add object path to returned set */
+        objs.insert(root_mount + string(obj_path));
 
         /* transition to next token */
         tit = strtok(NULL, "\n");

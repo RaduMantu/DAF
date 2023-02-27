@@ -13,7 +13,8 @@ LDFLAGS  = $(shell pkg-config --libs \
                 libnetfilter_queue   \
                 libbpf               \
                 libprocps            \
-                libcrypto)
+                libcrypto            \
+                mount)
 
 CLANG      = clang
 LLC        = llc
