@@ -233,7 +233,6 @@ void nl_delayed_ev_handle(uint64_t delta_t)
 }
 
 /* nl_sock_diag - returns the inode of a specific named socket
- *  @nl_fd    : NETLINK_INET_DIAG socket
  *  @protocol : IPPROTO_{TCP,UDP}
  *  @src_addr : network order source ip address      (0 if ignored)
  *  @dst_addr : network order destination ip address (0 if ignored)
@@ -248,8 +247,7 @@ void nl_delayed_ev_handle(uint64_t delta_t)
  * first resulting entry and print a warning. If the function fails for any
  * other reason, the inode buffer will be zeroed out.
  */
-int32_t nl_sock_diag(int32_t  nl_fd,
-                     uint8_t  protocol,
+int32_t nl_sock_diag(uint8_t  protocol,
                      uint32_t src_addr,
                      uint32_t dst_addr,
                      uint16_t src_port,
@@ -264,7 +262,13 @@ int32_t nl_sock_diag(int32_t  nl_fd,
     struct iovec            iov[2];         /* buffer aggregators         */
     struct inet_diag_msg    *diag_msg;      /* netlink diagnositc reponse */
     uint8_t                 recv_buf[4096]; /* netlink response buffer    */
+    int32_t                 nl_fd;          /* netlink socket             */
     ssize_t                 ans;            /* answer                     */
+    int32_t                 ret = -1;       /* return code                */
+
+    /* open netlink socket for socket diagnostics */
+    nl_fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_INET_DIAG);
+    RET(nl_fd == -1, 1, "unable to open netlink socket (%s)", strerror(errno));
 
     /* initial zeroing of structures */
     memset(&msg,      0, sizeof(msg));
@@ -301,28 +305,31 @@ int32_t nl_sock_diag(int32_t  nl_fd,
 
     /* send socket diagnostic request */
     ans = sendmsg(nl_fd, &msg, 0);
-    RET(ans == -1, -1, "unable to send netlink socket diagnostics request");
+    GOTO(ans == -1, clean_nl, "unable to send socket diagnostic request");
 
     /* wait for response (can come in multiple instances) */
     while (1) {
         ans = recv(nl_fd, recv_buf, sizeof(recv_buf), 0);
-        RET(ans == -1, -1, "unable to receive diagnostic data");
+        GOTO(ans == -1, clean_nl, "unable to receive diagnostic data");
 
         /* for all parts of the full message */
         nlh_it = (struct nlmsghdr*) recv_buf;
         while(NLMSG_OK(nlh_it, ans)){
             /* check for error or response end */
-            RET(nlh_it->nlmsg_type == NLMSG_ERROR, -1, "NLMSG_ERROR");
-            if (nlh_it->nlmsg_type == NLMSG_DONE)
-                return *inode_p == 0;
+            GOTO(nlh_it->nlmsg_type == NLMSG_ERROR, clean_nl, "NLMSG_ERROR");
+            if (nlh_it->nlmsg_type == NLMSG_DONE) {
+                ret = (*inode_p == 0);
+                goto clean_nl;
+            }
 
             /* extract payload from current message */
             diag_msg = (struct inet_diag_msg*) NLMSG_DATA(nlh_it);
 
-            /* check if filtering criteria were insufficient */
+            /* check if filtering criteria were insufficient   *
+             * NOTE: insufficient criteria -> multiple matches */
             if (*inode_p) {
                 WAR("insufficient filtering criteria");
-                return -1;
+                goto clean_nl;
             }
 
             /* set inode value */
@@ -336,7 +343,10 @@ int32_t nl_sock_diag(int32_t  nl_fd,
         }
     }
 
+clean_nl:
+    close(nl_fd);
+
     /* unreachable */
-    return 0;
+    return ret;
 }
 

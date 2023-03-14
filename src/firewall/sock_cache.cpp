@@ -68,7 +68,6 @@ static unordered_set<uint32_t>                                     tracked_pids;
 
 /* runtine resources that need initialization -- see sc_init() */
 static regex_t regex;       /* compiled regex to match "socket:[<inode>]" */
-int32_t        nsd_fd;      /* netlink socket diagnostics file descriptor */
 
 /* runtime statistics counters */
 uint64_t symlink_miss = 0;      /* fd was closed too fast */
@@ -278,10 +277,6 @@ int32_t sc_init(void)
     /* compile regex for fd symlink value match to socket string */
     ans = regcomp(&regex, "socket:\\[[[:digit:]]*\\]", REG_NOSUB);
     RET(ans, ans, "unable to compile regex (%d)", ans);
-
-    /* open netlink socket diagnostics socket  */
-    nsd_fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_INET_DIAG);
-    RET(nsd_fd == -1, -1, "unable to open netlink socket diagnostics socket");
 
     return 0;
 }
@@ -510,8 +505,8 @@ unordered_set<uint32_t> *sc_get_pid(uint8_t  protocol,
                                     uint16_t src_port,
                                     uint16_t dst_port)
 {
-    int32_t  ans;
-    uint32_t inode;
+    int32_t  ans;       /* answer         */
+    uint32_t inode;     /* socket inode   */
 
     /* sanity check; a src_port 0 will not break nl_sock_diag but will waste *
      * time with netlink socket diagnostics query that we can't use anyway   */
@@ -527,7 +522,7 @@ unordered_set<uint32_t> *sc_get_pid(uint8_t  protocol,
         /* look up inode of socket with given filtering criteria *
          * NOTE: misses here can be common; make it less verbose *
          * TODO: might be interesting to add a counter here      */
-        ans = nl_sock_diag(nsd_fd, protocol, src_ip, dst_ip, src_port,
+        ans = nl_sock_diag(protocol, src_ip, dst_ip, src_port,
                 dst_port, &inode);
         if (ans)
             return NULL;
