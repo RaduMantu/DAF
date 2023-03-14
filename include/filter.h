@@ -118,7 +118,6 @@ struct ctl_msg {
  ******************************************************************************/
 
 int32_t filter_init(uint8_t val_fwd, uint8_t val_in);
-uint32_t get_verdict(void *pkt, std::vector<std::vector<uint8_t *>>& maps,
-            uint32_t chain);
+uint32_t get_verdict(void *pkt, uint32_t chain);
 int32_t  flt_handle_ctl(int32_t us_csock_fd);
 

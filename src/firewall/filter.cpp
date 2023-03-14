@@ -33,6 +33,8 @@
 #include <string>               /* string        */
 
 #include "filter.h"
+#include "sock_cache.h"
+#include "hash_cache.h"
 #include "signer.h"
 #include "util.h"
 
@@ -115,145 +117,204 @@ filter_init(uint8_t val_fwd, uint8_t val_in)
 
 /* get_verdict - establishes accept / drop verdict for packet
  *  @pkt    : packet buffer
- *  @maps   : vector of hashes for memory mapped objects, for each process
  *  @chain  : {INPUT,OUTPUT}_CHAIN (see filter.h)
  *
  *  @return : NF_{ACCEPT,DROP} if packet matched a rule
  *            NF_MAX_VERDICT + 1 if packet did not match any rule
  *
+ *  The reason why we don't return NF_MAX_VERDICT is that it coincides with
+ *  NF_STOP, which is deprecated but still exists.
+ *
  *  Returning NF_MAX_VERDICT + 1 will eventually lead to the chain's default
- *  rule being applied.
+ *  rule being applied. It can be returned under multiple circumstances:
+ *      - packet matched no rule but it _was_ analyzed
+ *      - unable to get digest of objects mmapped by found processes
  */
-uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
+uint32_t
+get_verdict(void *pkt, uint32_t chain)
 {
-    uint8_t                 md_agg[SHA256_DIGEST_LENGTH];   /* digest buffer */
-    EVP_MD_CTX              *ctx;           /* sha256 context                */
-    vector<struct flt_crit> *sel_chain;     /* pointer to selected chain     */
-    struct iphdr            *iph;           /* ip header                     */
-    struct tcphdr           *tcph;          /* tch header                    */
-    struct udphdr           *udph;          /* udp header                    */
-    uint8_t                 matched;        /* matching object was found     */
-    uint8_t                 *data;          /* easy byte-sized access to pkt */
-    int32_t                 ans;            /* answer                        */
+    uint8_t                   md_agg[SHA256_DIGEST_LENGTH]; /* digest buffer */
+    EVP_MD_CTX                *ctx;         /* sha256 context                */
+    vector<struct flt_crit>   *sel_chain;   /* pointer to selected chain     */
+    struct iphdr              *iph;         /* ip header                     */
+    struct tcphdr             *tcph;        /* tcp header                    */
+    struct udphdr             *udph;        /* udp header                    */
+    uint8_t                   matched;      /* matching object was found     */
+    uint8_t                   *data;        /* easy byte-sized access to pkt */
+    int32_t                   ans;          /* answer                        */
+    uint8_t                   l4_proto;     /* layer 4 protocol              */
+    uint32_t                  src_ip;       /* network order src ip          */
+    uint32_t                  dst_ip;       /* network order dst ip          */
+    uint16_t                  src_port;     /* network order src port        */
+    uint16_t                  dst_port;     /* network order dst port        */
+    unordered_set<uint32_t>   *pid_set_p;   /* pointer to set of pids        */
+    vector<vector<uint8_t *>> hashes;       /* per process ordered hashes    */
+    uint8_t                   known_l4;     /* supported l4 protocol         */
+    size_t                    pid_idx;      /* index of analyzed pid         */
+    uint8_t                   *md;          /* pointer to digest buffer      */
 
-    /* get reference to correct chain */
-    if (chain == INPUT_CHAIN)
-        sel_chain = &input_chain;
-    else if (chain == OUTPUT_CHAIN)
-        sel_chain = &output_chain;
-    else
-        RET(1, NF_MAX_VERDICT + 1, "invalid chain identifier");
-
-    /* cast packet buffer to iphdr */
+    /* set initial values */
     iph  = (struct iphdr *) pkt;
     data = (uint8_t *) pkt;
+    pid_set_p = NULL;
+    known_l4  = 1;
 
-    /* for now FORWARD chain does not accept rules      *
-     * using it only for potential signature validation *
-     * TODO: add support for rules on FORWARD chain     *
-     *       deduplicate the code below                 */
-    if (chain == FORWARD_CHAIN) {
-        if (validate_forward) {
-            /* drop if no options (and signature) available  *
-             * NOTE: at the moment, checking only L3 options */
-            if (iph->ihl == 5)
-                return NF_DROP;
+    /* depending on chain, perform signature validation if needed *
+     * also, set the sel_chain ptr to the current chain           */
+    switch (chain) {
+        case INPUT_CHAIN:
+            sel_chain = &input_chain;
 
-            /* check if option is our singature                *
-             * NOTE: for now, assuming ours is the only option */
-            if (data[20] != SIG_OP_CP)
-                return NF_DROP;
+            if (validate_input) {
+                /* drop if no options (and signature) available  *
+                 * NOTE: at the moment, checking only L3 options */
+                if (iph->ihl == 5)
+                    return NF_DROP;
 
-            /* check signature itself */
-            ans = verify_hmac(data, &data[22]);
-            RET(ans == -1, NF_MAX_VERDICT + 1, "unable to verify signature");
-            if (ans == 0)
-                return NF_DROP;
-        }
+                /* check if option is our singature                *
+                 * NOTE: for now, assuming ours is the only option */
+                if (data[20] != SIG_OP_CP)
+                    return NF_DROP;
 
-        /* no other rules to check; ACCEPT by default */
-        return NF_ACCEPT;
+                /* check signature itself */
+                ans = verify_hmac(data, &data[22]);
+                RET(ans == -1, NF_MAX_VERDICT + 1, "unable to verify signature");
+                if (ans == 0)
+                    return NF_DROP;
+            }
+
+            break;
+        case OUTPUT_CHAIN:
+            sel_chain = &output_chain;
+
+            break;
+        case FORWARD_CHAIN:
+            if (validate_forward) {
+                /* drop if no options (and signature) available  *
+                 * NOTE: at the moment, checking only L3 options */
+                if (iph->ihl == 5)
+                    return NF_DROP;
+
+                /* check if option is our singature                *
+                 * NOTE: for now, assuming ours is the only option */
+                if (data[20] != SIG_OP_CP)
+                    return NF_DROP;
+
+                /* check signature itself */
+                ans = verify_hmac(data, &data[22]);
+                RET(ans == -1, NF_MAX_VERDICT + 1,
+                    "unable to verify signature");
+                if (ans == 0)
+                    return NF_DROP;
+            }
+
+            /* no other rules to check; ACCEPT by default */
+            return NF_ACCEPT;
+        default:
+            RET(1, NF_MAX_VERDICT + 1, "invlid chain: %u", chain);
     }
 
-    /* verify signatures if required */
-    if (chain == INPUT_CHAIN && validate_input) {
-        /* drop if no options (and signature) available  *
-         * NOTE: at the moment, checking only L3 options */
-        if (iph->ihl == 5)
-            return NF_DROP;
+    /* extract layer 3 features (for readablity & ease of access) */
+    src_ip   = iph->saddr;
+    dst_ip   = iph->daddr;
+    l4_proto = iph->protocol;
 
-        /* check if option is our singature                *
-         * NOTE: for now, assuming ours is the only option */
-        if (data[20] != SIG_OP_CP)
-            return NF_DROP;
+    /* extract layer 4 features (based on protocol)                 *
+     * NOTE: {src,dst}_port must not be used unitialized further on */
+    switch (l4_proto) {
+        case IPPROTO_TCP:
+            tcph = (struct tcphdr *) &((uint8_t *) iph)[iph->ihl * 4];
 
-        /* check signature itself */
-        ans = verify_hmac(data, &data[22]);
-        RET(ans == -1, NF_MAX_VERDICT + 1, "unable to verify signature");
-        if (ans == 0)
-            return NF_DROP;
+            src_port = tcph->source;
+            dst_port = tcph->dest;
+
+            break;
+        case IPPROTO_UDP:
+            udph = (struct udphdr *) &((uint8_t *) iph)[iph->ihl * 4];
+
+            src_port = udph->source;
+            dst_port = udph->dest;
+
+            break;
+        default:
+            known_l4 = 0;
     }
 
     /* for each rule in chain */
     for (auto& rule : *sel_chain) {
+        /* clear any object hashes from previous iterations */
+        hashes.clear();
+
         /* check layer 3 fields */
         if ((rule.flags & FLT_SRC_IP)
-            && (((iph->saddr & rule.src_ip_mask) != rule.src_ip)
+            && (((src_ip & rule.src_ip_mask) != rule.src_ip)
                 == !(rule.flags & FLT_SRC_IP_INV)))
             continue;
         if ((rule.flags & FLT_DST_IP)
-            && (((iph->daddr & rule.dst_ip_mask) != rule.dst_ip)
+            && (((dst_ip & rule.dst_ip_mask) != rule.dst_ip)
                 == !(rule.flags & FLT_DST_IP_INV)))
             continue;
         if ((rule.flags & FLT_L4_PROTO)
-            && ((iph->protocol != rule.l4_proto)
+            && ((l4_proto != rule.l4_proto)
                 == !(rule.flags & FLT_L4_PROTO_INV)))
             continue;
 
-        /* check layer 4 fields (depending on protocol) */
-        switch (iph->protocol) {
-            case IPPROTO_TCP:
-                tcph = (struct tcphdr *) &((uint8_t *) iph)[iph->ihl * 4];
+        /* skip to next rule if layer 4 protocol unsupported */
+        if (!known_l4)
+            continue;
 
-                if ((rule.flags & FLT_SRC_PORT)
-                    && ((tcph->source != rule.src_port)
-                        == !(rule.flags & FLT_SRC_PORT_INV)))
-                    continue;
-                if ((rule.flags & FLT_DST_PORT)
-                    && ((tcph->dest != rule.dst_port)
-                        == !(rule.flags & FLT_DST_PORT_INV)))
-                    continue;
-
-                break;
-            case IPPROTO_UDP:
-                udph = (struct udphdr *) &((uint8_t *) iph)[iph->ihl * 4];
-
-                if ((rule.flags & FLT_SRC_PORT)
-                    && ((udph->source != rule.src_port)
-                        == !(rule.flags & FLT_SRC_PORT_INV)))
-                    continue;
-                if ((rule.flags & FLT_DST_PORT)
-                    && ((udph->dest != rule.dst_port)
-                        == !(rule.flags & FLT_DST_PORT_INV)))
-                    continue;
-
-                break;
-            /* ignore rule for unkown l4 protocol */
-            default:
-                continue;
-        }
+        /* check layer 4 fields */
+        if ((rule.flags & FLT_SRC_PORT)
+            && ((src_port != rule.src_port)
+                == !(rule.flags & FLT_SRC_PORT_INV)))
+            continue;
+        if ((rule.flags & FLT_DST_PORT)
+            && ((dst_port != rule.dst_port)
+                == !(rule.flags & FLT_DST_PORT_INV)))
+            continue;
 
         /* if not checking process identity, consider this a match */
         if (!(rule.flags & FLT_HASH))
             return (rule.verdict & VRD_ACCEPT) ? NF_ACCEPT : NF_DROP;
 
+        /* TODO: switch to rule-specific namespace here */
+
+        /* obtain set of potential endpoint processes ids                     *
+         * failure to do so means that the match criteria can not be verified */
+        pid_set_p = sc_get_pid(l4_proto, src_ip, dst_ip,
+                        chain == INPUT_CHAIN ? dst_port : src_port,
+                        chain == INPUT_CHAIN ? src_port : dst_port);
+        if (!pid_set_p)
+            continue;
+
+        /* get hashes of memory mapped objects (alphabetically ordered by path) */
+        hashes.resize(pid_set_p->size());
+        pid_idx = 0;
+
+        for (auto pid_it : *pid_set_p) {
+            auto maps = hc_get_maps(pid_it);
+
+            for (auto& map_it : maps) {
+                /* get sha256 digest of object (unlikely to fail -> report it) */
+                md = hc_get_sha256((char *) map_it.c_str());
+                RET(!md, NF_MAX_VERDICT + 1, "could not get sha256 digest of %s",
+                    map_it.c_str());
+
+                /* push hashes to vector in object's order in set */
+                hashes[pid_idx].push_back(md);
+            }
+
+            /* continue to next process */
+            pid_idx++;
+        }
+
         /* check single hash match                                  *
          * NOTE: if verdict is DROP, one process is enough to match *
-         *       if verdict is ACCEPT, all process must match       *
+         *       if verdict is ACCEPT, all processes must match     *
          *       check inversion does not affect the above          */
         if (rule.flags & FLT_SINGLE_HASH) {
             /* for each process that could have sent this packet */
-            for (auto& pm : maps) {
+            for (auto& pm : hashes) {
                 /* initial assumption is that no objects match */
                 matched = 0;
 
@@ -295,7 +356,7 @@ uint32_t get_verdict(void *pkt, vector<vector<uint8_t *>>& maps, uint32_t chain)
         /* aggregate hash check */
         else if (rule.flags & FLT_AGGREGATE_HASH) {
             /* for each process that could have sent this packet */
-            for (auto& pm : maps) {
+            for (auto& pm : hashes) {
                 /* initial assumption is that all objects don't match */
                 matched = 0;
 
