@@ -188,9 +188,9 @@ get_rootfs_mp(uint32_t pid, string &root_mount)
         /* what we're interested in is the merged directory of the upper *
          * overlay; the mountpoint we identify here is bound to the diff *
          * directory in stead                                            */
-        char *upper_start = (char *) strstr(fs_ops, "upper=");
+        char *upper_start = (char *) strstr(fs_ops, "upperdir=");
         GOTO(!upper_start, clean_iter, "unable to find \"upper\" parameter");
-        upper_start += strlen("upper=");
+        upper_start += strlen("upperdir=");
 
         char *upper_stop = (char *) strstr(upper_start, "/diff,");
         GOTO(!upper_stop, clean_iter, "unable to find end of \"upper\"");
@@ -213,8 +213,6 @@ clean_iter:
 
 clean_table:
     mnt_free_table(table);
-
-    DEBUG("pid=%u ret=%d root=%s", pid, ret, root_mount.c_str());
 
     return ret;
 }
