@@ -54,11 +54,12 @@ struct flt_crit {
     /* process identity */
     uint8_t sha256_md[32];
 
+    /* network namespace */
+    char     netns_file[256];
+    uint32_t netns_fd;          /* to be populated by firewall */
+
     /* meta */
     uint32_t flags;
-
-    /* reserved for 64-byte alignment */
-    uint8_t reserved[6];
 };
 
 /******************************************************************************

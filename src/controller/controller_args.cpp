@@ -60,7 +60,7 @@ static struct argp_option options[] = {
     { "append",     'A', NULL,   0, "Append rule at the end",               0 },
     { "insert",     'I', "NUM",  0, "Insert rule on position (0 is first)", 0 },
     { "delete",     'D', "NUM",  0, "Delete rule on position (0 is first)", 0 },
-    { "print-hash", 'H', "PATH", 0, "prints the SHA256 digest of a file",   1 },
+    { "print-hash", 'H', "PATH", 0, "Prints the SHA256 digest of a file",   1 },
 
     /* meta */
     { NULL, 0, NULL, 0, "Modifiers" },
@@ -77,7 +77,8 @@ static struct argp_option options[] = {
     { "agg-hash",  ARG_AGGH, "HEXSTR",         0, "[!] Aggregate multiple hashes", 30 },
     { "vrdct",     'v',      "{ACCEPT|DROP}",  0, "Verdict for matched criteria",  40 },
     { "chain",     'c',      "{INPUT|OUTPUT}", 0, "Where to apply command",        40 },
-    { "sig-loc"  , 'l',      "{l3|l4}",        0, "Signature insertion location",  40 },
+    { "sig-loc",   'l',      "{l3|l4}",        0, "Signature insertion location",  40 },
+    { "namespace", 'n',      "FILE",           0, "Net namespace magic file",      50 },
 
     /* end of list */
     { 0 },
@@ -641,6 +642,14 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
                 RET(1, EINVAL, "unknown signature location");
 
             break;
+        /* namespace */
+        case 'n':
+            RET(cfg.rule.netns_file[0], EINVAL,
+                "netns magic file already specified");
+
+            strncpy(cfg.rule.netns_file, arg, sizeof(cfg.rule.netns_file) - 1);
+
+            break;
         /* next argument negation */
         case '!':
             invert = !invert;
@@ -665,6 +674,9 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
             RET((cfg.msg.flags & (CTL_APPEND | CTL_INSERT | CTL_DELETE))
                 && !(cfg.msg.flags & CHAIN_MASK),
                 EINVAL, "no chain specified");
+            RET((cfg.msg.flags & (CTL_APPEND | CTL_INSERT))
+                && !cfg.rule.netns_file[0],
+                EINVAL, "no namespace magic file specified");
 
             /* if no chain is specified for -L, assume both */
             if ((cfg.msg.flags & CTL_LIST) && !(cfg.rule.verdict & CHAIN_MASK))

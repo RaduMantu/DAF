@@ -35,6 +35,7 @@
 #include "filter.h"
 #include "sock_cache.h"
 #include "hash_cache.h"
+#include "netns_cache.h"
 #include "signer.h"
 #include "util.h"
 
@@ -514,6 +515,14 @@ int32_t flt_handle_ctl(int32_t us_csock_fd)
                 advance(it, reqm.msg.pos);
             }
 
+            /* get reference to target net namespace */
+            reqm.rule.netns_fd = nnc_get_fd(reqm.rule.netns_file);
+            if (reqm.rule.netns_fd == -1) {
+                WAR("invalid netns magic file");
+                rspm.msg.flags |= CTL_NACK;
+                goto common_short_resp;
+            }
+
             /* insert rule */
             sel_chain->insert(it, reqm.rule);
 
@@ -525,14 +534,25 @@ int32_t flt_handle_ctl(int32_t us_csock_fd)
 
             /* append rule */
             if (reqm.msg.flags & CTL_INPUT)
-                input_chain.push_back(reqm.rule);
+                sel_chain = &input_chain;
             else if (reqm.msg.flags & CTL_OUTPUT)
-                output_chain.push_back(reqm.rule);
+                sel_chain = &output_chain;
             else {
                 WAR("no chain specified");
                 rspm.msg.flags |= CTL_NACK;
                 goto common_short_resp;
             }
+
+            /* get reference to target net namespace */
+            reqm.rule.netns_fd = nnc_get_fd(reqm.rule.netns_file);
+            if (reqm.rule.netns_fd == -1) {
+                WAR("invalid netns magic file");
+                rspm.msg.flags |= CTL_NACK;
+                goto common_short_resp;
+            }
+
+            /* append rule */
+            sel_chain->push_back(reqm.rule);
 
             /* send short ACK response */
             rspm.msg.flags |= CTL_ACK;
@@ -559,6 +579,10 @@ int32_t flt_handle_ctl(int32_t us_csock_fd)
                 rspm.msg.flags |= CTL_NACK;
                 goto common_short_resp;
             }
+
+            /* release reference to target net namespace */
+            ans = nnc_release_ns(it->netns_file);
+            ALERT(ans == -1, "unable to release namespace");
 
             /* remove element */
             sel_chain->erase(it);
