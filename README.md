@@ -6,12 +6,20 @@ mapped in the address space of the processes that generate them.
 ## Usage
 
 First, create `iptable` rules to divert packages to our firewall through
-Netfilter Queue. Note that the queue numbers do not need to be 0 and 1,
+Netfilter Queue. Note that the queue numbers do not need to be 0-2,
 but these are the defaults used by `app-fw` in absence of CLI overrides.
 
 ```
-# iptables -I OUTPUT -j NFQUEUE --queue-num 0 --queue-bypass
-# iptables -I INPUT  -j NFQUEUE --queue-num 1 --queue-bypass
+# iptables -I OUTPUT  -j NFQUEUE --queue-num 0 --queue-bypass
+# iptables -I INPUT   -j NFQUEUE --queue-num 1 --queue-bypass
+# iptables -I FORWARD -j NFQUEUE --queue-num 2 --queue-bypass
+```
+
+Optionally, add rules to redirect traffic to/from docker bridge to our firewall.
+
+```
+# iptables -I FORWARD -i docker0 -j NFQUEUE --queue-num 0 --queue-bypass
+# iptables -I FORWARD -o docker0 -j NFQUEUE --queue-num 1 --queue-bypass
 ```
 
 Next, start the firewall. The only argument that needs to be passed is
