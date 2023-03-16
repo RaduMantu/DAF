@@ -28,6 +28,7 @@
 #include <unordered_set>    /* unordered_set       */
 #include <utility>          /* pair                */
 #include <functional>       /* hash                */
+#include <tuple>            /* tuple               */
 
 #include "sock_cache.h"
 #include "netlink_helpers.h"
@@ -50,20 +51,41 @@ struct pair_hash {
     }
 };
 
+struct tuple_hash {
+    template <class T1, class T2, class T3>
+    size_t operator()(const tuple<T1, T2, T3>& p) const
+    {
+        auto hash1 = hash<T1>{}(get<0>(p));
+        auto hash2 = hash<T1>{}(get<1>(p));
+        auto hash3 = hash<T1>{}(get<2>(p));
+
+        return hash1 ^ hash2 ^ hash3;
+    }
+};
+
+/* type representing a port specific to a certain netowrk namespace
+ *  @first  : resident device (namespace)
+ *  @second : inode number    (namespace)
+ *  @third  : port number
+ *
+ * see `man ioctl_ns` for more information
+ */
+typedef tuple<uint64_t, uint64_t, uint16_t> netns_port_t;
+
 /* internal data structures                                             *
  *  pid_to_socks : set of socket inodes to which pid has access         *
  *  sock_to_pids : set of pids that have access to socket inodes        *
  *  fd_to_sock   : translation from <pid,fd> to socket inode            *
  *  inode_fd_ref : number of fd references a pid has to a socket inode  *
- *  sock_to_port : port associated to socket inode (if any)             *
- *  port_to_sock : socket associated to port (depends on type)          *
+ *  sock_to_port : (netns_dev, netns_inode, port) associated to socket inode
+ *  port_to_sock : socket inode associated to (netns_dev, netns_inode, port)
  *  tracked_pids : processes whose sockets were tracked since inception */
 static unordered_map<uint32_t, unordered_set<uint32_t>>            pid_to_socks;
 static unordered_map<uint32_t, unordered_set<uint32_t>>            sock_to_pids;
 static unordered_map<pair<uint32_t, uint8_t>, uint32_t, pair_hash> fd_to_sock;
 static unordered_map<pair<uint32_t, uint32_t>, uint8_t, pair_hash> inode_fd_ref;
-static unordered_map<uint32_t, uint16_t>                           sock_to_port;
-static unordered_map<uint16_t, uint32_t>                           port_to_sock;
+static unordered_map<uint32_t, netns_port_t>                       sock_to_port;
+static unordered_map<netns_port_t, uint32_t, tuple_hash>           port_to_sock;
 static unordered_set<uint32_t>                                     tracked_pids;
 
 /* runtine resources that need initialization -- see sc_init() */
@@ -486,11 +508,13 @@ void sc_dump_state(void)
 }
 
 /* sc_get_pid - performs port -> socket_inode -> pid translation
- *  @protocol : protocol employed by the socket
- *  @src_ip   : network order source ip        (can be 0)
- *  @dst_ip   : network order destination ip   (can be 0)
- *  @src_port : network order source port      (must NOT be 0)
- *  @dst_port : network order destination port (can be 0)
+ *  @protocol  : protocol employed by the socket
+ *  @src_ip    : network order source ip        (can be 0)
+ *  @dst_ip    : network order destination ip   (can be 0)
+ *  @src_port  : network order source port      (must NOT be 0)
+ *  @dst_port  : network order destination port (can be 0)
+ *  @netns_dev : network namespace resident device
+ *  @netns_ino : netowrk namespace inode
  *
  *  @return : pointer to set of pids that have access to given port
  *            or NULL on error or no match found
@@ -498,12 +522,21 @@ void sc_dump_state(void)
  * arguments that can be 0 are used to filter entries in netlink socket
  * diagnostics request. only src_port will be used when mapping the inode in
  * the internal structures
+ *
+ * NOTE: see `man ioctl_ns` to understand where to get @netns_dev and @netns_ino
+ *
+ * NOTE: caller must perform transition to the correct network namespace
+ *       _before_ calling this function; when taking the slow path, the creation
+ *       of the netlink socket must be performed in the same namespace as the
+ *       network socket that needs to be identified
  */
 unordered_set<uint32_t> *sc_get_pid(uint8_t  protocol,
                                     uint32_t src_ip,
                                     uint32_t dst_ip,
                                     uint16_t src_port,
-                                    uint16_t dst_port)
+                                    uint16_t dst_port,
+                                    uint64_t netns_dev,
+                                    uint64_t netns_ino)
 {
     int32_t  ans;       /* answer         */
     uint32_t inode;     /* socket inode   */
@@ -512,8 +545,9 @@ unordered_set<uint32_t> *sc_get_pid(uint8_t  protocol,
      * time with netlink socket diagnostics query that we can't use anyway   */
     RET(!src_port, NULL, "zero-valued src port was provided");
 
-    /* fast path: look up port:inode association in cache */
-    auto inode_it = port_to_sock.find(src_port);
+    /* fast path: look up socket inode based on namespace and port */
+    auto inode_it = port_to_sock.find(
+                        make_tuple(netns_dev, netns_ino, src_port));
     if (inode_it != port_to_sock.end()) {
         inode = inode_it->second;
     }
@@ -528,8 +562,8 @@ unordered_set<uint32_t> *sc_get_pid(uint8_t  protocol,
             return NULL;
 
         /* update internal structures */
-        port_to_sock[src_port] = inode;
-        sock_to_port[inode]    = src_port;
+        port_to_sock[make_tuple(netns_dev, netns_ino, src_port)] = inode;
+        sock_to_port[inode] = make_tuple(netns_dev, netns_ino, src_port);
     }
 
     /* fast path: using inode, find the cached set of associated pids */

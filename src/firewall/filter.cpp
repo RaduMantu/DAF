@@ -17,7 +17,12 @@
  * along with app-fw. If not, see <https://www.gnu.org/licenses/>.
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <unistd.h>             /* read, close          */
+#include <sched.h>              /* setns                */
 #include <sys/socket.h>         /* accept               */
 #include <sys/uio.h>            /* writev               */
 #include <netinet/ip.h>         /* iphdr                */
@@ -153,6 +158,8 @@ get_verdict(void *pkt, uint32_t chain)
     uint8_t                   known_l4;     /* supported l4 protocol         */
     size_t                    pid_idx;      /* index of analyzed pid         */
     uint8_t                   *md;          /* pointer to digest buffer      */
+    uint64_t                  netns_dev;    /* network namespace device num  */
+    uint64_t                  netns_ino;    /* network namespace inode num   */
 
     /* set initial values */
     iph  = (struct iphdr *) pkt;
@@ -278,13 +285,24 @@ get_verdict(void *pkt, uint32_t chain)
         if (!(rule.flags & FLT_HASH))
             return (rule.verdict & VRD_ACCEPT) ? NF_ACCEPT : NF_DROP;
 
-        /* TODO: switch to rule-specific namespace here */
+        /* get current rule's namespace descriptors */
+        auto [ netns_dev, netns_ino ] = nnc_fd_to_ns(rule.netns_fd);
+        RET(netns_dev == -1 && netns_ino == -1, NF_MAX_VERDICT + 1,
+            "unable to get target namespace device & inode numbers");
+
+        /* switch to rule-specific namespace here                          *
+         * NOTE: rule insertion was successful only because the net ns was *
+         *       cached; it's safe to assume that it's readily available   */
+        ans = setns(rule.netns_fd, CLONE_NEWNET);
+        RET(ans == -1, NF_MAX_VERDICT + 1, "unable to switch namespaces (%s)",
+            strerror(errno));
 
         /* obtain set of potential endpoint processes ids                     *
          * failure to do so means that the match criteria can not be verified */
         pid_set_p = sc_get_pid(l4_proto, src_ip, dst_ip,
                         chain == INPUT_CHAIN ? dst_port : src_port,
-                        chain == INPUT_CHAIN ? src_port : dst_port);
+                        chain == INPUT_CHAIN ? src_port : dst_port,
+                        netns_dev, netns_ino);
         if (!pid_set_p)
             continue;
 
