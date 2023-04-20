@@ -79,8 +79,12 @@ int32_t nfq_in_handler(struct nfq_q_handle *qh,
 
     /* get verdict for current packet or use default policy */
     verdict = get_verdict(iph, INPUT_CHAIN);
-    if (verdict == NF_MAX_VERDICT + 1)
+    if (verdict == NF_MAX_VERDICT + 1) {
         verdict = nfq_opp->policy_in;
+        DEBUG("DEFAULT POLICY");
+    } else {
+        DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP");
+    }
 
     /* communicate packet verdict to nfq */
     return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
@@ -126,6 +130,7 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
     verdict = get_verdict(iph, OUTPUT_CHAIN);
     if (verdict == NF_MAX_VERDICT + 1) {
         verdict = nfq_opp->policy_out;
+        DEBUG("DEFAULT POLICY");
     } else {
         DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP");
     }
@@ -189,6 +194,7 @@ int32_t nfq_fwd_handler(struct nfq_q_handle *qh,
     verdict = get_verdict(iph, FORWARD_CHAIN);
     if (verdict == NF_MAX_VERDICT + 1) {
         verdict = nfq_opp->policy_fwd;
+        DEBUG("DEFAULT POLICY");
     } else {
         DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP");
     }
