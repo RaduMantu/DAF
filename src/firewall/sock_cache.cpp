@@ -580,8 +580,8 @@ unordered_set<uint32_t> *sc_get_pid(uint8_t  protocol,
         pids_it = sock_to_pids.find(inode);
         RET(pids_it == sock_to_pids.end(), NULL,
             "could not find socket match in any process (inode: %u)", inode);
-    }
 
-    return NULL;
+        return &pids_it->second;
+    }
 }
 
