@@ -444,15 +444,6 @@ main(int argc, char *argv[])
             }
 
             nfq_handle_packet(nf_handle_fwd, (char *) pkt_buff, rb);
-        } else if (epoll_ev[0].data.fd == STDIN_FILENO) {
-            rb = read(STDIN_FILENO, usr_input, sizeof(usr_input));
-            if(rb == -1) {
-                WAR("failed to read stdin input (%s)", strerror(errno));
-                continue;
-            }
-
-            /* print debug info on user request */
-            sc_dump_state();
         }
     }
     WAR("exited main loop");

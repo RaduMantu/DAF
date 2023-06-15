@@ -481,32 +481,6 @@ void sc_proc_exec(uint32_t pid)
     _scan_proc_sockets(pid);
 }
 
-/* sc_dump_state - dump internal state of data structures (for debug)
- */
-void sc_dump_state(void)
-{
-    printf("=======================[ state dump ]=======================\n");
-
-    /* for all monitored processes */
-    for (auto& [pid_k, sock_set] : pid_to_socks) {
-        printf(MAGENTA_B ">>> pid:   " UNSET_B "%5u (socks: %lu)\n" CLR,
-            pid_k, sock_set.size());
-
-        /* for all sockets available to current process */
-        for (auto& inode : sock_set) {
-            printf(CYAN_B " >> inode: " UNSET_B "%10u (refs: %lu)\n" CLR,
-                inode, sock_to_pids[inode].size());
-        }
-    }
-
-    /* print additional statistics */
-    printf("\n\n");
-    printf(BLUE_B "early fd close:     " UNSET_B "%10lu\n" CLR, symlink_miss);
-    printf(BLUE_B "early process exit: " UNSET_B "%10lu\n" CLR, dir_miss);
-
-    printf("========================[ cut here ]========================\n");
-}
-
 /* sc_get_pid - performs port -> socket_inode -> pid translation
  *  @protocol  : protocol employed by the socket
  *  @src_ip    : network order source ip        (can be 0)

@@ -9,7 +9,6 @@ void    sc_close_fd(uint32_t pid, uint8_t fd);
 void    sc_proc_exit(uint32_t pid);
 void    sc_proc_fork(uint32_t parent_pid, uint32_t child_pid);
 void    sc_proc_exec(uint32_t pid);
-void    sc_dump_state(void);
 
 std::unordered_set<uint32_t> *sc_get_pid(
         uint8_t  protocol,
