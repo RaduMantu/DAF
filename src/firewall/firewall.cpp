@@ -449,7 +449,8 @@ main(int argc, char *argv[])
     epoll_ev[0].data.fd = nfqueue_fd_in;
     epoll_ev[0].events  = EPOLLIN | (cfg.parallelize ? EPOLLONESHOT : 0);
 
-    ans = epoll_ctl(epoll_p1_fd, EPOLL_CTL_ADD, nfqueue_fd_in, &epoll_ev[0]);
+    ans = epoll_ctl(cfg.uniform_prio ? epoll_p0_fd : epoll_p1_fd,
+                    EPOLL_CTL_ADD, nfqueue_fd_in, &epoll_ev[0]);
     GOTO(ans == -1, clean_epoll_fd_p1,
         "failed to add netfilter input queue to epoll-p1 monitor (%s)",
         strerror(errno));
@@ -459,7 +460,8 @@ main(int argc, char *argv[])
     epoll_ev[0].data.fd = nfqueue_fd_out;
     epoll_ev[0].events  = EPOLLIN | (cfg.parallelize ? EPOLLONESHOT : 0);
 
-    ans = epoll_ctl(epoll_p1_fd, EPOLL_CTL_ADD, nfqueue_fd_out, &epoll_ev[0]);
+    ans = epoll_ctl(cfg.uniform_prio ? epoll_p0_fd : epoll_p1_fd,
+                    EPOLL_CTL_ADD, nfqueue_fd_out, &epoll_ev[0]);
     GOTO(ans == -1, clean_epoll_fd_p1,
         "failed to add netfilter output queue to epoll-p1 monitor (%s)",
         strerror(errno));
@@ -470,8 +472,8 @@ main(int argc, char *argv[])
         epoll_ev[0].data.fd = nfqueue_fd_fwd;
         epoll_ev[0].events  = EPOLLIN | (cfg.parallelize ? EPOLLONESHOT : 0);
 
-        ans = epoll_ctl(epoll_p1_fd, EPOLL_CTL_ADD, nfqueue_fd_fwd,
-                &epoll_ev[0]);
+        ans = epoll_ctl(cfg.uniform_prio ? epoll_p0_fd : epoll_p1_fd,
+                        EPOLL_CTL_ADD, nfqueue_fd_fwd, &epoll_ev[0]);
         GOTO(ans == -1, clean_epoll_fd_p1,
              "failed to add netfilter forward queue to epoll-p1 monitor (%s)",
              strerror(errno));
@@ -482,27 +484,32 @@ main(int argc, char *argv[])
     epoll_ev[0].data.fd = STDIN_FILENO;
     epoll_ev[0].events  = EPOLLIN | (cfg.parallelize ? EPOLLONESHOT : 0);
 
-    ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, STDIN_FILENO, &epoll_ev[0]);
+    ans = epoll_ctl(cfg.uniform_prio ? epoll_p0_fd : epoll_p0_fd,
+                    EPOLL_CTL_ADD, STDIN_FILENO, &epoll_ev[0]);
     GOTO(ans == -1, clean_epoll_fd_p1,
         "failed to add stdin to epoll-p1 monitor");
     INFO("stdin added to epoll monitor");
 
-    /* add priority ordering epoll instances to top level epoll selector */
-    epoll_ev[0].data.fd = epoll_p0_fd;
-    epoll_ev[0].events  = EPOLLIN;
+    /* add priority ordering epoll instances to top level epoll selector *
+     * NOTE: this is predicated on actually having multiple priorities   *
+     *       setting `-u` makes the epoll hierarchy redundant            */
+    if (!cfg.uniform_prio) {
+        epoll_ev[0].data.fd = epoll_p0_fd;
+        epoll_ev[0].events  = EPOLLIN;
 
-    ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, epoll_p0_fd, &epoll_ev[0]);
-    GOTO(ans == -1, clean_epoll_fd_p1,
-        "failed to add epoll-p0 to epoll monitor (%s)", strerror(errno));
-    INFO("epoll-p0 added to top level epoll monitor");
+        ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, epoll_p0_fd, &epoll_ev[0]);
+        GOTO(ans == -1, clean_epoll_fd_p1,
+            "failed to add epoll-p0 to epoll monitor (%s)", strerror(errno));
+        INFO("epoll-p0 added to top level epoll monitor");
 
-    epoll_ev[0].data.fd = epoll_p1_fd;
-    epoll_ev[0].events  = EPOLLIN;
+        epoll_ev[0].data.fd = epoll_p1_fd;
+        epoll_ev[0].events  = EPOLLIN;
 
-    ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, epoll_p1_fd, &epoll_ev[0]);
-    GOTO(ans == -1, clean_epoll_fd_p1,
-        "failed to add epoll-p1 to epoll monitor (%s)", strerror(errno));
-    INFO("epoll-p1 added to top level epoll monitor");
+        ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, epoll_p1_fd, &epoll_ev[0]);
+        GOTO(ans == -1, clean_epoll_fd_p1,
+            "failed to add epoll-p1 to epoll monitor (%s)", strerror(errno));
+        INFO("epoll-p1 added to top level epoll monitor");
+    }
 
     /* listen for new connections on ctl unix socket */
     ans = listen(us_csock_fd, 1);
@@ -551,20 +558,28 @@ main(int argc, char *argv[])
     /* main loop */
     INFO("main loop starting");
     while (!terminate) {
-        /* wait for top level epoll event */
-        ans = epoll_wait(epoll_fd, epoll_ev, 2, -1);
-        DIE(ans == -1 && errno != EINTR, "error waiting for epoll events (%s)",
-            strerror(errno));
+        /* prioritize event class if using epoll hierarchization */
+        if (!cfg.uniform_prio) {
+            /* wait for top level epoll event */
+            ans = epoll_wait(epoll_fd, epoll_ev, 2, -1);
+            DIE(ans == -1 && errno != EINTR, "error waiting for epoll events (%s)",
+                strerror(errno));
 
-        /* determine if any of the (max 2) events were top priority */
-        epoll_sel_fd  = epoll_p1_fd;
-        worker_thread = 1;
-        for (size_t i = 0; i < ans; i++)
-            if (epoll_ev[i].data.fd == epoll_p0_fd) {
-                epoll_sel_fd  = epoll_p0_fd;
-                worker_thread = 0;
-                break;
-            }
+            /* determine if any of the (max 2) events were top priority */
+            epoll_sel_fd  = epoll_p1_fd;
+            worker_thread = 1;
+            for (size_t i = 0; i < ans; i++)
+                if (epoll_ev[i].data.fd == epoll_p0_fd) {
+                    epoll_sel_fd  = epoll_p0_fd;
+                    worker_thread = 0;
+                    break;
+                }
+        }
+        /* otherwise use the leaf epoll object with the highest priority */
+        else {
+            epoll_sel_fd = epoll_p0_fd;
+            worker_thread = 0;
+        }
 
         /* we know that event is available on selected priority level *
          * here we prioritize events relating to sockets, not NFQ     */

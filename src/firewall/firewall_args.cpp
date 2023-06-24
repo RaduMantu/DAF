@@ -72,11 +72,13 @@ static struct argp_option options[] = {
       "(default: 50ms) [μs]" },
     { "retain-maps", 'r', NULL, 0,
       "retain objects in set even after unmapping them (default: no)" },
-    { "no-rescan",   'R', NULL, 0,
+    { "no-rescan", 'R', NULL, 0,
       "prevent rescanning maps if set is non-empty "
       "(default: no, implies: -r)" },
-    { "parallel",    'm', NULL, 0,
+    { "parallel", 'm', NULL, 0,
       "use multiple threads for event processing (default: no)" },
+    { "uniform-prio", 'u', NULL, 0,
+      "enforce uniform priority for event processing (default: no)" },
 
     { 0 }
 };
@@ -113,6 +115,7 @@ struct config cfg  = {
     .fwd_validate     = 0,
     .in_validate      = 0,
     .parallelize      = 0,
+    .uniform_prio     = 0,
     .sig_proto        = IPPROTO_IP,
     .sig_type         = SIG_NONE,
 };
@@ -236,6 +239,10 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         /* parallelize event processing */
         case 'm':
             cfg.parallelize = 1;
+            break;
+        /* assign uniform priorities to events */
+        case 'u':
+            cfg.uniform_prio = 1;
             break;
         /* this is invoked after all arguments have been parsed */
         case ARGP_KEY_END:
