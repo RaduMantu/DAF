@@ -36,6 +36,7 @@
 using namespace std;
 
 #pragma clang diagnostic ignored "-Wenum-compare-switch"
+#pragma clang diagnostic ignored "-Wgnu-variable-sized-type-not-at-end"
 
 /******************************************************************************
  ************************** INTERNAL DATA STRUCTURES **************************
