@@ -18,20 +18,22 @@
  */
 
 #include <stdio.h>
-#include <stdint.h>             /* [u]int*_t */
-#include <signal.h>             /* signal, siginterrupt */
-#include <unistd.h>             /* read, write, close, unlink */
-#include <netinet/in.h>         /* IPPROTO_* */
-#include <netinet/ip.h>         /* iphdr */
-#include <netinet/tcp.h>        /* tcphdr */
-#include <netinet/udp.h>        /* udphdr */
-#include <sys/socket.h>         /* socket */
-#include <sys/un.h>             /* sockaddr_un */
-#include <sys/inotify.h>        /* inotify */
-#include <sys/epoll.h>          /* epoll */
-#include <sys/resource.h>       /* setrlimit */
-#include <bpf/libbpf.h>         /* eBPF API */
-#include <vector>               /* vector */
+#include <stdint.h>             /* [u]int*_t                          */
+#include <signal.h>             /* signal, siginterrupt, pthread_kill */
+#include <unistd.h>             /* read, write, close, unlink         */
+#include <pthread.h>            /* pthread_*                          */
+#include <netinet/in.h>         /* IPPROTO_*                          */
+#include <netinet/ip.h>         /* iphdr                              */
+#include <netinet/tcp.h>        /* tcphdr                             */
+#include <netinet/udp.h>        /* udphdr                             */
+#include <sys/socket.h>         /* socket                             */
+#include <sys/un.h>             /* sockaddr_un                        */
+#include <sys/inotify.h>        /* inotify                            */
+#include <sys/epoll.h>          /* epoll                              */
+#include <sys/resource.h>       /* setrlimit                          */
+#include <bpf/libbpf.h>         /* eBPF API                           */
+#include <vector>               /* std::vector                        */
+#include <queue>                /* std::queue                         */
 
 #include "firewall_args.h"
 #include "netlink_helpers.h"
@@ -46,15 +48,153 @@
 using namespace std;
 
 #define CTL_SOCK_NAME "/tmp/app_fw.socket"
+#define PKT_MAX_SZ    0xffff
 
-static bool bml = false;    /* break main loop */
+static bool terminate = false;    /* program pending termination */
+
+/* configured by main thread, used by workers */
+static int32_t            us_csock_fd;      /* unix connection socket     */
+static int32_t            netlink_fd;       /* netlink socket             */
+static int32_t            inotify_fd;       /* inotify file descriptor    */
+static int32_t            bpf_map_fd;       /* eBPF map file descriptor   */
+static int32_t            nfqueue_fd_in;    /* nfq input file descriptor  */
+static int32_t            nfqueue_fd_out;   /* nfq output file descriptor */
+static int32_t            nfqueue_fd_fwd;   /* nfq fwd file descriptor    */
+static struct nfq_handle  *nf_handle_in;    /* NFQUEUE input handle       */
+static struct nfq_handle  *nf_handle_out;   /* NFQUEUE output handle      */
+static struct nfq_handle  *nf_handle_fwd;   /* NFQUEUE forward handle     */
+static struct ring_buffer *bpf_ringbuf;     /* eBPF ring buffer reference */
+
+/* system event (0) and packet processing (1) worker data */
+typedef struct {
+    pthread_cond_t  cond;
+    pthread_mutex_t mutex;
+    queue<int32_t>  workload;
+} worker_data_t;
+
+worker_data_t worker_ctx[2];
 
 /* sigint_handler - sets <break main loop> variable to true
  */
-static void sigint_handler(int)
+static void
+sigint_handler(int)
 {
-    bml = true;
+    terminate = true;
 }
+
+/* handle_event - worker thread helper function
+ *  @fd : event source file descriptor
+ *
+ *  @return : 0 if everythig went well; -1 otherwise
+ */
+static int32_t
+handle_event(int32_t fd)
+{
+    int32_t ans;                    /* answer            */
+    ssize_t rb;                     /* read bytes        */
+    uint8_t pkt_buff[PKT_MAX_SZ];   /* nfq packet buffer */
+
+    /* handle event depending on fd value */
+    if (fd == us_csock_fd) {
+        ans = flt_handle_ctl(fd);
+        RET(ans, -1, "unable to handle rule manager request");
+    } elif (fd == netlink_fd) {
+        ans = nl_proc_ev_handle(fd);
+        RET(ans, -1, "unable to handle netlink event");
+    } elif (fd == bpf_map_fd) {
+        ans = ring_buffer__consume(bpf_ringbuf);
+        RET(ans < 0, -1, "failed to consume eBPF ringbuffer sample");
+    } elif (fd == nfqueue_fd_out) {
+        rb = read(fd, pkt_buff, sizeof(pkt_buff));
+        RET(rb == -1, -1, "failed to read packet from nf queue (%s)",
+            strerror(errno));
+
+        nfq_handle_packet(nf_handle_out, (char *) pkt_buff, rb);
+    } elif (fd == nfqueue_fd_in) {
+        rb = read(fd, pkt_buff, sizeof(pkt_buff));
+        RET(rb == -1, -1, "failed to read packet from nf queue (%s)",
+            strerror(errno));
+
+        nfq_handle_packet(nf_handle_in, (char *) pkt_buff, rb);
+    } elif (fd == nfqueue_fd_fwd) {
+        rb = read(fd, pkt_buff, sizeof(pkt_buff));
+        RET(rb == -1, -1, "failed to read packet from nf queue (%s)",
+            strerror(errno));
+
+        nfq_handle_packet(nf_handle_fwd, (char *) pkt_buff, rb);
+    }
+
+    return 0;
+}
+
+/* worker - worker thread main function
+ *  @data : ptr to worker data structure
+ *
+ *  @return : NULL if exited normally (shouldn't happen)
+ *            (void *) -1 on error
+ *
+ * Depending on the value of epfd_p, this thread will either process system
+ * events (and update our representational model), or it will try to filter
+ * incoming packets.
+ *
+ * Using multi-threading is more or less required in order to improve
+ * performance. Otherwise, packet processing will be stalled by _any_ system
+ * event that we monitor. However, this runs the risk of evaluating packets
+ * based on a potentially (slightly) outdated system view.
+ *
+ * NOTE: This funciton will be called as-is from the main thread if
+ *       multi-threading is not enabled.
+ */
+static void *
+worker(worker_data_t *data)
+{
+    int32_t fd;     /* pending fd in workload */
+    int32_t ans;    /* answer                 */
+
+    /* main woker loop                                    *
+     * NOTE: must be killed by main thread before exiting */
+    while (1) {
+        /* mutex owner is next to receive work                             *
+         * NOTE: at the moment we have ony one worker; this will be needed *
+         *       if we ever want to add support for multiple workers       */
+        ans = pthread_mutex_lock(&data->mutex);
+        RET(ans, (void *) -1, "unable to acquire mutex (%s)", strerror(errno));
+
+        /* await work from main thread */
+        if (data->workload.size() == 0) {
+            ans = pthread_cond_wait(&data->cond, &data->mutex);
+            RET(ans, (void *) -1, "unable to wait on condition (%s)",
+                strerror(errno));
+
+            /* spurious wakeup */
+            if (data->workload.size() == 0) {
+                ans = pthread_mutex_unlock(&data->mutex);
+                RET(ans, (void *) -1, "unable to unlock mutex (%s)",
+                    strerror(errno));
+
+                continue;
+            }
+        }
+
+        /* get pending fd from workload */
+        fd = data->workload.front();
+        data->workload.pop();
+
+        /* release mutex ownership while working */
+        ans = pthread_mutex_unlock(&data->mutex);
+        RET(ans, (void *) -1, "unable to unlock mutex (%s)", strerror(errno));
+
+        /* processed enqueued event */
+        handle_event(fd);
+    }
+
+    return NULL;
+}
+
+
+/******************************************************************************
+ **************************** PROGRAM ENTRY POINT *****************************
+ ******************************************************************************/
 
 /* main - program entry point
  *  @argc : number of command line arguments & program name
@@ -66,12 +206,6 @@ int32_t
 main(int argc, char *argv[])
 {
     int32_t                   ans;              /* answer                     */
-    int32_t                   netlink_fd;       /* netlink socket             */
-    int32_t                   inotify_fd;       /* inotify file descriptor    */
-    int32_t                   nfqueue_fd_in;    /* nfq input file descriptor  */
-    int32_t                   nfqueue_fd_out;   /* nfq output file descriptor */
-    int32_t                   nfqueue_fd_fwd;   /* nfq fwd file descriptor    */
-    int32_t                   bpf_map_fd;       /* eBPF map file descriptor   */
     int32_t                   epoll_fd;         /* main epoll file descriptor */
     int32_t                   epoll_p0_fd;      /* priority 0 (top) epoll fd  */
     int32_t                   epoll_p1_fd;      /* priority 1 epoll fd        */
@@ -82,17 +216,11 @@ main(int argc, char *argv[])
     struct bpf_object         *bpf_obj;         /* eBPF object file           */
     struct bpf_program        *bpf_prog;        /* eBPF program in obj        */
     vector<struct bpf_link *> bpf_links;        /* links to attached programs */
-    struct ring_buffer        *bpf_ringbuf;     /* eBPF ring buffer reference */
-    struct nfq_handle         *nf_handle_in;    /* NFQUEUE input handle       */
     struct nfq_q_handle       *nfq_handle_in;   /* netfilter input handle     */
-    struct nfq_handle         *nf_handle_out;   /* NFQUEUE output handle      */
     struct nfq_q_handle       *nfq_handle_out;  /* netfilter output handle    */
-    struct nfq_handle         *nf_handle_fwd;   /* NFQUEUE forward handle     */
     struct nfq_q_handle       *nfq_handle_fwd;  /* netfilter forward handle   */
     struct nfq_op_param       nfq_opp;          /* nfq operational parameters */
     struct sockaddr_un        us_name;          /* unix socket name           */
-    int32_t                   us_csock_fd;      /* unix connection socket     */
-    uint8_t                   pkt_buff[0xffff]; /* nfq packet buffer          */
     char                      usr_input[256];   /* user stdin input buffer    */
     ssize_t                   rb;               /* bytes read                 */
 
@@ -201,7 +329,7 @@ main(int argc, char *argv[])
         "unable to bind to input nfqueue (%s)", strerror(errno));
     INFO("bound to netfilter queue: %d", cfg.queue_num_in);
 
-    ans = nfq_set_mode(nfq_handle_in, NFQNL_COPY_PACKET, sizeof(pkt_buff));
+    ans = nfq_set_mode(nfq_handle_in, NFQNL_COPY_PACKET, PKT_MAX_SZ);
     GOTO(ans < 0, clean_nf_queue_in, "unable to set input nfq mode (%s)",
         strerror(errno));
     INFO("configured nfq input packet handling parameters");
@@ -221,7 +349,7 @@ main(int argc, char *argv[])
         "unable to bind to output nfqueue (%s)", strerror(errno));
     INFO("bound to netfilter queue: %d", cfg.queue_num_out);
 
-    ans = nfq_set_mode(nfq_handle_out, NFQNL_COPY_PACKET, sizeof(pkt_buff));
+    ans = nfq_set_mode(nfq_handle_out, NFQNL_COPY_PACKET, PKT_MAX_SZ);
     GOTO(ans < 0, clean_nf_queue_out, "unable to set output nfq mode (%s)",
         strerror(errno));
     INFO("configured nfq output packet handling parameters");
@@ -242,7 +370,7 @@ main(int argc, char *argv[])
              "unable to bind to forward nfqueue (%s)", strerror(errno));
         INFO("bound to netfilter queue: %d", cfg.queue_num_fwd);
 
-        ans = nfq_set_mode(nfq_handle_fwd, NFQNL_COPY_PACKET, sizeof(pkt_buff));
+        ans = nfq_set_mode(nfq_handle_fwd, NFQNL_COPY_PACKET, PKT_MAX_SZ);
         GOTO(ans < 0, clean_nf_queue_fwd, "unable to set forward nfq mode (%s)",
             strerror(errno));
         INFO("configured nfq forward packet handling parameters");
@@ -387,7 +515,7 @@ main(int argc, char *argv[])
 
     /* main loop */
     INFO("main loop starting");
-    while (!bml) {
+    while (!terminate) {
         /* wait for top level epoll event */
         ans = epoll_wait(epoll_fd, epoll_ev, 2, -1);
         DIE(ans == -1 && errno != EINTR, "error waiting for epoll events (%s)",
@@ -408,43 +536,7 @@ main(int argc, char *argv[])
             strerror(errno));
 
         /* handle event */
-        if (epoll_ev[0].data.fd == us_csock_fd) {
-            ans = flt_handle_ctl(us_csock_fd);
-        } else if (epoll_ev[0].data.fd == netlink_fd) {
-            ans = nl_proc_ev_handle(netlink_fd);
-        } else if (epoll_ev[0].data.fd == inotify_fd) {
-            /* TODO */
-        } else if (epoll_ev[0].data.fd == bpf_map_fd) {
-            ans = ring_buffer__consume(bpf_ringbuf);
-            ALERT(ans < 0, "failed to consume eBPF ringbuffer sample");
-        } else if (epoll_ev[0].data.fd == nfqueue_fd_out) {
-            rb = read(nfqueue_fd_out, pkt_buff, sizeof(pkt_buff));
-            if(rb == -1) {
-                WAR("failed to read packet from nf queue (%s)",
-                    strerror(errno));
-                continue;
-            }
-
-            nfq_handle_packet(nf_handle_out, (char *) pkt_buff, rb);
-        } else if (epoll_ev[0].data.fd == nfqueue_fd_in) {
-            rb = read(nfqueue_fd_in, pkt_buff, sizeof(pkt_buff));
-            if(rb == -1) {
-                WAR("failed to read packet from nf queue (%s)",
-                    strerror(errno));
-                continue;
-            }
-
-            nfq_handle_packet(nf_handle_in, (char *) pkt_buff, rb);
-        } else if (epoll_ev[0].data.fd == nfqueue_fd_fwd) {
-            rb = read(nfqueue_fd_in, pkt_buff, sizeof(pkt_buff));
-            if(rb == -1) {
-                WAR("failed to read packet from nf queue (%s)",
-                    strerror(errno));
-                continue;
-            }
-
-            nfq_handle_packet(nf_handle_fwd, (char *) pkt_buff, rb);
-        }
+        handle_event(epoll_ev[0].data.fd);
     }
     WAR("exited main loop");
 

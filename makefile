@@ -14,7 +14,8 @@ LDFLAGS  = $(shell pkg-config --libs \
                 libbpf               \
                 libprocps            \
                 libcrypto            \
-                mount)
+                mount)               \
+           -lpthread
 
 CLANG      = clang
 LLC        = llc
