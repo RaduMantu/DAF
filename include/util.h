@@ -14,6 +14,10 @@
 #define unlikely(x)     __builtin_expect((x),0)
 #endif
 
+/* `elif` keyword for brevity */
+#ifndef elif
+#define elif else if
+#endif
 
 /* set to 0 in order to suppress DEBUG output */
 #define DEBUG_EN 1
