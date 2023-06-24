@@ -219,7 +219,7 @@ static int32_t _scan_proc_sockets(uint32_t pid)
     if (!d) {
         dir_miss++;
 
-        WAR("could not open %s", procfs_path);
+        /* WAR("could not open %s", procfs_path); */
         return -1;
     }
 

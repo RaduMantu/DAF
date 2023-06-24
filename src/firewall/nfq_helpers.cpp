@@ -81,9 +81,9 @@ int32_t nfq_in_handler(struct nfq_q_handle *qh,
     verdict = get_verdict(iph, INPUT_CHAIN);
     if (verdict == NF_MAX_VERDICT + 1) {
         verdict = nfq_opp->policy_in;
-        DEBUG("DEFAULT POLICY");
+        /* DEBUG("DEFAULT POLICY"); */
     } else {
-        DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP");
+        /* DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP"); */
     }
 
     /* communicate packet verdict to nfq */
@@ -130,9 +130,9 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
     verdict = get_verdict(iph, OUTPUT_CHAIN);
     if (verdict == NF_MAX_VERDICT + 1) {
         verdict = nfq_opp->policy_out;
-        DEBUG("DEFAULT POLICY");
+        /* DEBUG("DEFAULT POLICY"); */
     } else {
-        DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP");
+        /* DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP"); */
     }
 
     /* if verdict is positive, append signature option */
@@ -194,9 +194,9 @@ int32_t nfq_fwd_handler(struct nfq_q_handle *qh,
     verdict = get_verdict(iph, FORWARD_CHAIN);
     if (verdict == NF_MAX_VERDICT + 1) {
         verdict = nfq_opp->policy_fwd;
-        DEBUG("DEFAULT POLICY");
+        /* DEBUG("DEFAULT POLICY"); */
     } else {
-        DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP");
+        /* DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP"); */
     }
 
     /* communicate packet verdict to nfq, w/o signature */
