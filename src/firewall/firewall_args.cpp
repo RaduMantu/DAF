@@ -75,6 +75,8 @@ static struct argp_option options[] = {
     { "no-rescan",   'R', NULL, 0,
       "prevent rescanning maps if set is non-empty "
       "(default: no, implies: -r)" },
+    { "parallel",    'm', NULL, 0,
+      "use multiple threads for event processing (default: no)" },
 
     { 0 }
 };
@@ -110,6 +112,7 @@ struct config cfg  = {
     .no_rescan        = 0,
     .fwd_validate     = 0,
     .in_validate      = 0,
+    .parallelize      = 0,
     .sig_proto        = IPPROTO_IP,
     .sig_type         = SIG_NONE,
 };
@@ -229,6 +232,10 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         case 'R':
             cfg.retain_maps = 1;
             cfg.no_rescan   = 1;
+            break;
+        /* parallelize event processing */
+        case 'm':
+            cfg.parallelize = 1;
             break;
         /* this is invoked after all arguments have been parsed */
         case ARGP_KEY_END:

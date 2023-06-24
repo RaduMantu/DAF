@@ -70,6 +70,7 @@ typedef struct {
     pthread_cond_t  cond;
     pthread_mutex_t mutex;
     queue<int32_t>  workload;
+    int32_t         epoll_prio_fd;
 } worker_data_t;
 
 worker_data_t worker_ctx[2];
@@ -128,7 +129,7 @@ handle_event(int32_t fd)
 }
 
 /* worker - worker thread main function
- *  @data : ptr to worker data structure
+ *  @_data : ptr to worker data structure
  *
  *  @return : NULL if exited normally (shouldn't happen)
  *            (void *) -1 on error
@@ -146,10 +147,13 @@ handle_event(int32_t fd)
  *       multi-threading is not enabled.
  */
 static void *
-worker(worker_data_t *data)
+worker(void *_data)
 {
-    int32_t fd;     /* pending fd in workload */
-    int32_t ans;    /* answer                 */
+    int32_t            fd;      /* pending fd in workload */
+    int32_t            ans;     /* answer                 */
+    struct epoll_event ev;      /* epoll event            */
+
+    worker_data_t *data = (worker_data_t *) _data;
 
     /* main woker loop                                    *
      * NOTE: must be killed by main thread before exiting */
@@ -186,6 +190,14 @@ worker(worker_data_t *data)
 
         /* processed enqueued event */
         handle_event(fd);
+
+        /* rearm file descriptor in epoll watchlist */
+        ev.data.fd = fd;
+        ev.events  = EPOLLIN | EPOLLONESHOT;
+
+        ans = epoll_ctl(data->epoll_prio_fd, EPOLL_CTL_MOD, fd, &ev);
+        RET(ans == -1, (void *) -1, "unable to rearm fd (%s)",
+            strerror(errno));
     }
 
     return NULL;
@@ -222,7 +234,9 @@ main(int argc, char *argv[])
     struct nfq_op_param       nfq_opp;          /* nfq operational parameters */
     struct sockaddr_un        us_name;          /* unix socket name           */
     char                      usr_input[256];   /* user stdin input buffer    */
+    uint32_t                  worker_thread;    /* selected worker thread     */
     ssize_t                   rb;               /* bytes read                 */
+    pthread_t                 threads[2];       /* worker threads (maybe)     */
 
     /* parse command line arguments */
     ans = argp_parse(&argp, argc, argv, 0, 0, &cfg);
@@ -264,8 +278,7 @@ main(int argc, char *argv[])
 
     /* create ctl unix socket */
     us_csock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    DIE(us_csock_fd == -1, "unable to open AF_UNIX socket (%s)",
-        strerror(errno));
+    DIE(us_csock_fd == -1, "unable to open AF_UNIX socket (%s)", strerror(errno));
     INFO("created ctl unix socket");
 
     /* bind ctl unix socket to name */
@@ -398,7 +411,7 @@ main(int argc, char *argv[])
 
     /* add ctl unix socket to epoll watchlist (top prio) */
     epoll_ev[0].data.fd = us_csock_fd;
-    epoll_ev[0].events  = EPOLLIN;
+    epoll_ev[0].events  = EPOLLIN | (cfg.parallelize ? EPOLLONESHOT : 0);
 
     ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, us_csock_fd, &epoll_ev[0]);
     GOTO(ans == -1, clean_epoll_fd_p1,
@@ -407,7 +420,7 @@ main(int argc, char *argv[])
 
     /* add netlink socket to epoll watchlist (top prio) */
     epoll_ev[0].data.fd = netlink_fd;
-    epoll_ev[0].events  = EPOLLIN;
+    epoll_ev[0].events  = EPOLLIN | (cfg.parallelize ? EPOLLONESHOT : 0);
 
     ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, netlink_fd, &epoll_ev[0]);
     GOTO(ans == -1, clean_epoll_fd_p1,
@@ -416,7 +429,7 @@ main(int argc, char *argv[])
 
     /* add inotify instance to epoll watchlist (top prio) */
     epoll_ev[0].data.fd = inotify_fd;
-    epoll_ev[0].events  = EPOLLIN;
+    epoll_ev[0].events  = EPOLLIN | (cfg.parallelize ? EPOLLONESHOT : 0);
 
     ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, inotify_fd, &epoll_ev[0]);
     GOTO(ans == -1, clean_epoll_fd_p1,
@@ -425,7 +438,7 @@ main(int argc, char *argv[])
 
     /* add eBPF ringbuffer to epoll watchlist (top prio) */
     epoll_ev[0].data.fd = bpf_map_fd;
-    epoll_ev[0].events  = EPOLLIN;
+    epoll_ev[0].events  = EPOLLIN | (cfg.parallelize ? EPOLLONESHOT : 0);
 
     ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, bpf_map_fd, &epoll_ev[0]);
     GOTO(ans == -1, clean_epoll_fd_p1,
@@ -434,7 +447,7 @@ main(int argc, char *argv[])
 
     /* add input netfilter queue to epoll watchlist (bottom prio) */
     epoll_ev[0].data.fd = nfqueue_fd_in;
-    epoll_ev[0].events  = EPOLLIN;
+    epoll_ev[0].events  = EPOLLIN | (cfg.parallelize ? EPOLLONESHOT : 0);
 
     ans = epoll_ctl(epoll_p1_fd, EPOLL_CTL_ADD, nfqueue_fd_in, &epoll_ev[0]);
     GOTO(ans == -1, clean_epoll_fd_p1,
@@ -444,7 +457,7 @@ main(int argc, char *argv[])
 
     /* add output netfilter queue to epoll watchlist (bottom prio) */
     epoll_ev[0].data.fd = nfqueue_fd_out;
-    epoll_ev[0].events  = EPOLLIN;
+    epoll_ev[0].events  = EPOLLIN | (cfg.parallelize ? EPOLLONESHOT : 0);
 
     ans = epoll_ctl(epoll_p1_fd, EPOLL_CTL_ADD, nfqueue_fd_out, &epoll_ev[0]);
     GOTO(ans == -1, clean_epoll_fd_p1,
@@ -455,7 +468,7 @@ main(int argc, char *argv[])
     /* add forward netfilter queue to epoll watchlist (bottom prio) */
     if (cfg.fwd_validate) {
         epoll_ev[0].data.fd = nfqueue_fd_fwd;
-        epoll_ev[0].events  = EPOLLIN;
+        epoll_ev[0].events  = EPOLLIN | (cfg.parallelize ? EPOLLONESHOT : 0);
 
         ans = epoll_ctl(epoll_p1_fd, EPOLL_CTL_ADD, nfqueue_fd_fwd,
                 &epoll_ev[0]);
@@ -467,7 +480,7 @@ main(int argc, char *argv[])
 
     /* add stdin to epoll watchlist (bottom prio) */
     epoll_ev[0].data.fd = STDIN_FILENO;
-    epoll_ev[0].events  = EPOLLIN;
+    epoll_ev[0].events  = EPOLLIN | (cfg.parallelize ? EPOLLONESHOT : 0);
 
     ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, STDIN_FILENO, &epoll_ev[0]);
     GOTO(ans == -1, clean_epoll_fd_p1,
@@ -513,6 +526,28 @@ main(int argc, char *argv[])
         bpf_links.push_back(bpf_link);
     }
 
+    /* if parallelizeable, initialize & start threads */
+    if (cfg.parallelize) {
+        worker_ctx[0].epoll_prio_fd = epoll_p0_fd;
+        worker_ctx[1].epoll_prio_fd = epoll_p1_fd;
+
+        for (size_t i = 0; i < sizeof(worker_ctx) / sizeof(*worker_ctx); i++) {
+            ans = pthread_mutex_init(&worker_ctx[i].mutex, NULL);
+            GOTO(ans, clean_bpf_links, "unable to initialize mutex (%s)",
+                 strerror(errno));
+
+            ans = pthread_cond_init(&worker_ctx[i].cond, NULL);
+            GOTO(ans, clean_bpf_links, "unable to initialize cond (%s)",
+                 strerror(errno));
+
+            ans = pthread_create(&threads[i], NULL, worker, &worker_ctx[i]);
+            GOTO(ans, clean_bpf_links, "unable to create thread (%s)",
+                 strerror(errno));
+
+            INFO("started worker thread %lu", i);
+        }
+    }
+
     /* main loop */
     INFO("main loop starting");
     while (!terminate) {
@@ -522,10 +557,12 @@ main(int argc, char *argv[])
             strerror(errno));
 
         /* determine if any of the (max 2) events were top priority */
-        epoll_sel_fd = epoll_p1_fd;
-        for (size_t i=0; i<ans; ++i)
+        epoll_sel_fd  = epoll_p1_fd;
+        worker_thread = 1;
+        for (size_t i = 0; i < ans; i++)
             if (epoll_ev[i].data.fd == epoll_p0_fd) {
-                epoll_sel_fd = epoll_p0_fd;
+                epoll_sel_fd  = epoll_p0_fd;
+                worker_thread = 0;
                 break;
             }
 
@@ -535,10 +572,27 @@ main(int argc, char *argv[])
         DIE(ans == -1 && errno != EINTR, "error waiting for epoll events (%s)",
             strerror(errno));
 
-        /* handle event */
-        handle_event(epoll_ev[0].data.fd);
+        /* single-threaded path: handle it ourselves */
+        if (!cfg.parallelize)
+            handle_event(epoll_ev[0].data.fd);
+        /* multi-threaded path: enqueue event for worker */
+        else {
+            worker_ctx[worker_thread].workload.push(epoll_ev[0].data.fd);
+
+            ans = pthread_cond_signal(&worker_ctx[worker_thread].cond);
+            DIE(ans, "unable to notify worker (%s)", strerror(errno));
+        }
     }
     WAR("exited main loop");
+
+clean_threads:
+    if (cfg.parallelize) {
+        for (size_t i = 0; i < sizeof(threads) / sizeof(*threads); i++) {
+            ans = pthread_kill(threads[i], 0);
+            DIE(ans, "unable to kill thread %lu (%s)", i, strerror(errno));
+            INFO("killed worker thread %lu", i);
+        }
+    }
 
 clean_bpf_links:
     for (auto& bpf_link : bpf_links) {

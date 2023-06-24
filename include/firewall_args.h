@@ -20,6 +20,7 @@ struct config {
     uint8_t  no_rescan        : 1; /* prevent rescanning maps                */
     uint8_t  fwd_validate     : 1; /* validate signature on forward chain    */
     uint8_t  in_validate      : 1; /* validate signature on input chain      */
+    uint8_t  parallelize      : 1; /* use multi-threaded version             */
     uint8_t  sig_proto;            /* protocol to host the signature         */
     sign_t   sig_type;             /* type of appended signature             */
 };
