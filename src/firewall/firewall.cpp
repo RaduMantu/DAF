@@ -257,7 +257,7 @@ main(int argc, char *argv[])
     INFO("set new resource limits");
 
     /* initialize packet filter settings */
-    ans = filter_init(cfg.fwd_validate, cfg.in_validate);
+    ans = filter_init(cfg.fwd_validate, cfg.in_validate, cfg.skip_ns_switch);
     DIE(ans, "unable to initialize filter");
     INFO("initialized filter");
 
@@ -480,15 +480,17 @@ main(int argc, char *argv[])
         INFO("netfilter forward queue added to epoll-p1 monitor");
     }
 
-    /* add stdin to epoll watchlist (bottom prio) */
+    /* add stdin to epoll watchlist (bottom prio)             *
+     * NOTE: this will fail if ran from within a bash script  *
+     *       stdin not used for anything at the moment anyway */
     epoll_ev[0].data.fd = STDIN_FILENO;
     epoll_ev[0].events  = EPOLLIN | (cfg.parallelize ? EPOLLONESHOT : 0);
 
     ans = epoll_ctl(cfg.uniform_prio ? epoll_p0_fd : epoll_p0_fd,
                     EPOLL_CTL_ADD, STDIN_FILENO, &epoll_ev[0]);
-    GOTO(ans == -1, clean_epoll_fd_p1,
-        "failed to add stdin to epoll-p1 monitor");
-    INFO("stdin added to epoll monitor");
+    /* GOTO(ans == -1, clean_epoll_fd_p1, */
+    /*     "failed to add stdin to epoll-p1 monitor"); */
+    /* INFO("stdin added to epoll monitor"); */
 
     /* add priority ordering epoll instances to top level epoll selector *
      * NOTE: this is predicated on actually having multiple priorities   *

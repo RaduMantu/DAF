@@ -79,6 +79,8 @@ static struct argp_option options[] = {
       "use multiple threads for event processing (default: no)" },
     { "uniform-prio", 'u', NULL, 0,
       "enforce uniform priority for event processing (default: no)" },
+    { "skip-ns-switch", 'S', NULL, 0,
+      "skip same netns switches on consecutive rules (default: no)" },
 
     { 0 }
 };
@@ -116,6 +118,7 @@ struct config cfg  = {
     .in_validate      = 0,
     .parallelize      = 0,
     .uniform_prio     = 0,
+    .skip_ns_switch   = 0,
     .sig_proto        = IPPROTO_IP,
     .sig_type         = SIG_NONE,
 };
@@ -243,6 +246,10 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         /* assign uniform priorities to events */
         case 'u':
             cfg.uniform_prio = 1;
+            break;
+        /* skip same netns switch on consecutive rule eval */
+        case 'S':
+            cfg.skip_ns_switch = 1;
             break;
         /* this is invoked after all arguments have been parsed */
         case ARGP_KEY_END:

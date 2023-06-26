@@ -118,7 +118,7 @@ struct ctl_msg {
  ********************************* PUBLIC API *********************************
  ******************************************************************************/
 
-int32_t filter_init(uint8_t val_fwd, uint8_t val_in);
+int32_t filter_init(uint8_t val_fwd, uint8_t val_in, uint8_t skip_ns_switch);
 uint32_t get_verdict(void *pkt, uint32_t chain);
 int32_t  flt_handle_ctl(int32_t us_csock_fd);
 

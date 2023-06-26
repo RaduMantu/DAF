@@ -54,8 +54,13 @@ static vector<struct flt_crit> input_chain;
 static vector<struct flt_crit> output_chain;
 
 /* operational parameters */
-uint8_t validate_input;     /* validate signature on INPUT chain   */
-uint8_t validate_forward;   /* validate signature on FORWARD chain */
+uint8_t validate_input;      /* validate signature on INPUT chain   */
+uint8_t validate_forward;    /* validate signature on FORWARD chain */
+uint8_t skip_same_ns_switch; /* skip same netns switches            */
+
+/* current network namespace */
+uint64_t curr_netns_dev;
+uint64_t curr_netns_ino;
 
 /******************************************************************************
  ************************** INTERNAL HELPER FUNCTIONS *************************
@@ -107,16 +112,18 @@ _send_chain(int32_t us_dsock_fd, vector<struct flt_crit>& chain)
  ******************************************************************************/
 
 /* filter_init - initializes filter internal structures
- *  @val_fwd : validate signature on FORWARD chain
- *  @val_in  : validate signature on INPUT chain
+ *  @val_fwd        : validate signature on FORWARD chain
+ *  @val_in         : validate signature on INPUT chain
+ *  @skip_ns_switch : skip same netns switch during rule evaluation
  *
  *  @return : 0 if everything went well
  */
 int32_t
-filter_init(uint8_t val_fwd, uint8_t val_in)
+filter_init(uint8_t val_fwd, uint8_t val_in, uint8_t skip_ns_switch)
 {
-    validate_forward = val_fwd;
-    validate_input   = val_in;
+    validate_forward    = val_fwd;
+    validate_input      = val_in;
+    skip_same_ns_switch = skip_ns_switch;
 
     return 0;
 }
@@ -290,12 +297,20 @@ get_verdict(void *pkt, uint32_t chain)
         RET(netns_dev == -1 && netns_ino == -1, NF_MAX_VERDICT + 1,
             "unable to get target namespace device & inode numbers");
 
-        /* switch to rule-specific namespace here                          *
+        /* switch to rule-specific namespace if different from current one *
          * NOTE: rule insertion was successful only because the net ns was *
          *       cached; it's safe to assume that it's readily available   */
-        ans = setns(rule.netns_fd, CLONE_NEWNET);
-        RET(ans == -1, NF_MAX_VERDICT + 1, "unable to switch namespaces (%s)",
-            strerror(errno));
+        if (!skip_same_ns_switch
+        || netns_dev != curr_netns_dev
+        || netns_ino != curr_netns_ino)
+        {
+            ans = setns(rule.netns_fd, CLONE_NEWNET);
+            RET(ans == -1, NF_MAX_VERDICT + 1,
+                "unable to switch namespaces (%s)", strerror(errno));
+
+            curr_netns_dev = netns_dev;
+            curr_netns_ino = netns_ino;
+        }
 
         /* obtain set of potential endpoint processes ids                     *
          * failure to do so means that the match criteria can not be verified */
