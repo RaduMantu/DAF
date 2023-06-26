@@ -8,7 +8,7 @@
 usage() {
     echo 'throughput_time.sh - measure throughput as a function of time'
     echo '    IFACE      : target interface               (required)'
-    echo '    MTU        : MTU to be set on IFACE         (default:1500)'
+    echo '    MTU        : MTU to be set on IFACE         (optional)'
     echo '    REST_TIME  : sleep time after setting MTU   (default:3)'
     echo ''
     echo '    IPERF_IP   : iperf server IP address        (required)'
@@ -22,6 +22,7 @@ usage() {
     echo '    FW_RULES   : number of rules to insert      (default:0)'
     echo '    NO_RESCAN  : prevent active va space rescan (default:no)'
     echo '    UNI_PRIO   : set uniform event priority     (default:no)'
+    echo '    SKIP_NS_SW : skip useless netns switches    (default:no)'
     echo ''
     echo 'For each type of experiment, collect data by appending script output'
     echo 'to the same log file. From there on, process the log file however'
@@ -42,7 +43,6 @@ cleanup() {
 }
 
 # default evnironment variable values
-MTU=${MTU:-1500}
 REST_TIME=${REST_TIME:-3}
 IPERF_PORT=${IPERF_PORT:-5201}
 DURATION=${DURATION:-10}
@@ -60,6 +60,10 @@ if [ ! -z "${UNI_PRIO}" ]; then
     UNI_PRIO='-u'
 fi
 
+if [ ! -z "${SKIP_NS_SW}" ]; then
+    SKIP_NS_SW='-S'
+fi
+
 # sanity check
 if [ -z "${IFACE}" ]; then
     printf 'Please specify the target interface\n\n'
@@ -75,9 +79,11 @@ fi
 
 # set MTU on the target interface & wait for changes to take effect
 # NOTE: not bothering to reset it to initial value after the experiment
-ip link set ${IFACE} mtu ${MTU}
-printf '>>> MTU = %u\n' ${MTU}
-sleep ${REST_TIME}
+if [ ! -z "${MTU}" ]; then
+    ip link set ${IFACE} mtu ${MTU}
+    printf '>>> MTU = %u\n' ${MTU}
+    sleep ${REST_TIME}
+fi
 
 # set up firewall if requested by user
 # NOTE: assumes that iptables rules have been configured already
@@ -88,7 +94,7 @@ if [ ! -z "${FW_ENABLE}" ]; then
 
     # start firewall in background
     # NOTE: assuming that you're running this as root (EUID=0)
-    ./bin/app-fw ${NO_RESCAN} ${UNI_PRIO} -e bin/syscall_probe.o \
+    ./bin/app-fw ${NO_RESCAN} ${UNI_PRIO} ${SKIP_NS_SW} -e bin/syscall_probe.o \
         &>>${FW_LOGFILE} &
 
     # append harcoded rules to firewall
