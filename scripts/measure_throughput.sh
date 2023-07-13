@@ -118,7 +118,8 @@ fi
 iperf3 -c ${IPERF_IP} ${IPERF_PORT} \
        -t ${DURATION}               \
        -i ${LOG_INTV}               \
-       -w ${WINDOW_SZ}
+       -w ${WINDOW_SZ}              \
+       -f k
 
 # print run delineator
 printf '~%.0s' {1..80}
