@@ -23,6 +23,7 @@ usage() {
     echo '    NO_RESCAN  : prevent active va space rescan (default:no)'
     echo '    UNI_PRIO   : set uniform event priority     (default:no)'
     echo '    SKIP_NS_SW : skip useless netns switches    (default:no)'
+    echo '    PART_CPY   : partial packet copy to u/s     (default:no)'
     echo ''
     echo 'For each type of experiment, collect data by appending script output'
     echo 'to the same log file. From there on, process the log file however'
@@ -64,6 +65,10 @@ if [ ! -z "${SKIP_NS_SW}" ]; then
     SKIP_NS_SW='-S'
 fi
 
+if [ ! -z "${PART_CPY}" ]; then
+    PART_CPY='-P'
+fi
+
 # sanity check
 if [ -z "${IFACE}" ]; then
     printf 'Please specify the target interface\n\n'
@@ -94,7 +99,8 @@ if [ ! -z "${FW_ENABLE}" ]; then
 
     # start firewall in background
     # NOTE: assuming that you're running this as root (EUID=0)
-    ./bin/app-fw ${NO_RESCAN} ${UNI_PRIO} ${SKIP_NS_SW} -e bin/syscall_probe.o \
+    ./bin/app-fw ${NO_RESCAN} ${UNI_PRIO} ${SKIP_NS_SW} ${PART_CPY} \
+        -e bin/syscall_probe.o                                      \
         &>>${FW_LOGFILE} &
 
     # append harcoded rules to firewall
