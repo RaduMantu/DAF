@@ -23,6 +23,7 @@ struct config {
     uint8_t  parallelize      : 1; /* use multi-threaded version             */
     uint8_t  uniform_prio     : 1; /* assign uniform event priority          */
     uint8_t  skip_ns_switch   : 1; /* skip same netns switch on rule eval    */
+    uint8_t  partial_read     : 1; /* read only 80 bytes of each packet      */
     uint8_t  sig_proto;            /* protocol to host the signature         */
     sign_t   sig_type;             /* type of appended signature             */
 };

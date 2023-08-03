@@ -71,7 +71,6 @@ int32_t nfq_in_handler(struct nfq_q_handle *qh,
     /* extract raw packet */
     ans = nfq_get_payload(nfd, (uint8_t **) &iph);
     RET(ans == -1, -1, "Unable to retrieve packet data (%s)", strerror(errno));
-    RET(ans != ntohs(iph->tot_len), -1, "Payload size & total len mismatch");
 
     /* process any delayed events that have timed out */
     nl_delayed_ev_handle(nfq_opp->proc_delay);

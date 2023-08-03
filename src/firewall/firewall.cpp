@@ -47,8 +47,11 @@
 
 using namespace std;
 
+/* NOTE: pkt buffer should have some extra space for netlink header. *
+ *       expect arbitrary amounts of padding depending on the range  *
+ *       set in nfq_set_mode().                                      */
+#define PKT_MAX_SZ    (0xffff + 128)
 #define CTL_SOCK_NAME "/tmp/app_fw.socket"
-#define PKT_MAX_SZ    0xffff
 
 static bool terminate = false;    /* program pending termination */
 
@@ -87,6 +90,9 @@ sigint_handler(int)
  *  @fd : event source file descriptor
  *
  *  @return : 0 if everythig went well; -1 otherwise
+ *
+ * NOTE: always try to read PKT_MAX_SZ; NFQ will adjust the amount of
+ *       transferred data depending on the nfq_set_mode() range arg.
  */
 static int32_t
 handle_event(int32_t fd)
@@ -342,7 +348,8 @@ main(int argc, char *argv[])
         "unable to bind to input nfqueue (%s)", strerror(errno));
     INFO("bound to netfilter queue: %d", cfg.queue_num_in);
 
-    ans = nfq_set_mode(nfq_handle_in, NFQNL_COPY_PACKET, PKT_MAX_SZ);
+    ans = nfq_set_mode(nfq_handle_in, NFQNL_COPY_PACKET,
+                       cfg.partial_read ? 80 : PKT_MAX_SZ);
     GOTO(ans < 0, clean_nf_queue_in, "unable to set input nfq mode (%s)",
         strerror(errno));
     INFO("configured nfq input packet handling parameters");

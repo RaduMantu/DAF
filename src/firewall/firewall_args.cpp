@@ -81,6 +81,8 @@ static struct argp_option options[] = {
       "enforce uniform priority for event processing (default: no)" },
     { "skip-ns-switch", 'S', NULL, 0,
       "skip same netns switches on consecutive rules (default: no)" },
+    { "partial-read", 'P', NULL, 0,
+      "read only first 80 bytes of each packet (default: no)" },
 
     { 0 }
 };
@@ -95,7 +97,8 @@ static char args_doc[] = "";
 static char doc[] = "Network traffic filter that verifies identity of processes"
                     " having access to transmitting / receiving sockets"
                     "\v"
-                    "NOTE: without '-f', the FORWARD queue is not used\n"
+                    "* Without '-f', the FORWARD queue is not used\n"
+                    "* The '-P' option is highly experimental!\n"
                     "\n"
                     "VERDICT={ACCEPT|DROP}\n"
                     "SIG_T={none,packet,app}\n"
@@ -119,6 +122,7 @@ struct config cfg  = {
     .parallelize      = 0,
     .uniform_prio     = 0,
     .skip_ns_switch   = 0,
+    .partial_read     = 0,
     .sig_proto        = IPPROTO_IP,
     .sig_type         = SIG_NONE,
 };
@@ -251,11 +255,18 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         case 'S':
             cfg.skip_ns_switch = 1;
             break;
+        /* read only 80 bytes of each packet (dangerous!) */
+        case 'P':
+            cfg.partial_read = 1;
+            break;
         /* this is invoked after all arguments have been parsed */
         case ARGP_KEY_END:
             /* final sanity check */
             RET(cfg.queue_num_in == cfg.queue_num_out, EINVAL,
                 "input and output queue numbers must be different");
+
+            RET(cfg.sig_type != SIG_NONE && cfg.partial_read, EINVAL,
+                "cannot sign packets while using '-P'");
 
             break;
         /* unknown argument */
