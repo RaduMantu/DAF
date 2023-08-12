@@ -68,6 +68,21 @@ static struct nfq_handle  *nf_handle_out;   /* NFQUEUE output handle      */
 static struct nfq_handle  *nf_handle_fwd;   /* NFQUEUE forward handle     */
 static struct ring_buffer *bpf_ringbuf;     /* eBPF ring buffer reference */
 
+/* elapsed time counters */
+static struct timeval program_start_marker;
+static struct timeval start_marker;
+
+static uint64_t epoll_ctr        = 0;
+static uint64_t fw_ctl_ctr       = 0;
+static uint64_t netlink_ctr      = 0;
+static uint64_t bpf_rb_ctr       = 0;
+static uint64_t nfq_read_out_ctr = 0;
+static uint64_t nfq_eval_out_ctr = 0;
+static uint64_t nfq_read_in_ctr  = 0;
+static uint64_t nfq_eval_in_ctr  = 0;
+static uint64_t nfq_read_fwd_ctr = 0;
+static uint64_t nfq_eval_fwd_ctr = 0;
+
 /* system event (0) and packet processing (1) worker data */
 typedef struct {
     pthread_cond_t  cond;
@@ -84,6 +99,131 @@ static void
 sigint_handler(int)
 {
     terminate = true;
+}
+
+/* print_stats - shows elapsed time statistics on STDIN
+ */
+static void
+print_stats(void)
+{
+    uint64_t main_loop_elapsed = 0;
+    UPDATE_TIMER(main_loop_elapsed, program_start_marker);
+
+    uint8_t buff[128];
+    read(STDIN_FILENO, buff, sizeof(buff));
+
+    DEBUG("Elapsed times [ms]");
+    DEBUG("  - Waiting for epoll             : %8.2lf (%6.2lf%%)",
+          epoll_ctr / 1e3, 1e2 * epoll_ctr / main_loop_elapsed);
+    DEBUG("  - Processing user command       : %8.2lf (%6.2lf%%)",
+          fw_ctl_ctr / 1e3, 1e2 * fw_ctl_ctr / main_loop_elapsed);
+    DEBUG("  - Processing netlink events     : %8.2lf (%6.2lf%%)",
+          netlink_ctr / 1e3, 1e2 * netlink_ctr / main_loop_elapsed);
+    DEBUG("  - Processing eBPF events        : %8.2lf (%6.2lf%%)",
+          bpf_rb_ctr / 1e3, 1e2 * bpf_rb_ctr / main_loop_elapsed);
+
+    DEBUG("  - Reading NFQ packet (OUT)      : %8.2lf (%6.2lf%%)",
+          nfq_read_out_ctr / 1e3, 1e2 * nfq_read_out_ctr / main_loop_elapsed);
+    DEBUG("  - Evaluating NFQ packet (OUT)   : %8.2lf (%6.2lf%%)",
+          nfq_eval_out_ctr / 1e3, 1e2 * nfq_eval_out_ctr / main_loop_elapsed);
+    DEBUG("    - Extracting packet           : %8.2lf (%6.2lf%%)",
+          nfqouth_extract_ctr / 1e3,
+          1e2 * nfqouth_extract_ctr / main_loop_elapsed);
+    DEBUG("    - Delayed events              : %8.2lf (%6.2lf%%)",
+          nfqouth_delayedev_ctr / 1e3,
+          1e2 * nfqouth_delayedev_ctr / main_loop_elapsed);
+    DEBUG("    - Verdict calculation         : %8.2lf (%6.2lf%%)",
+          nfqouth_verdict_ctr / 1e3,
+          1e2 * nfqouth_verdict_ctr / main_loop_elapsed);
+    DEBUG("    - Verdict reporting           : %8.2lf (%6.2lf%%)",
+          nfqouth_report_ctr / 1e3,
+          1e2 * nfqouth_report_ctr / main_loop_elapsed);
+
+    DEBUG("  - Reading NFQ packet (IN)       : %8.2lf (%6.2lf%%)",
+          nfq_read_in_ctr / 1e3, 1e2 *  nfq_read_in_ctr / main_loop_elapsed);
+    DEBUG("  - Evaluating NFQ packet (IN)    : %8.2lf (%6.2lf%%)",
+          nfq_eval_in_ctr / 1e3, 1e2 * nfq_eval_in_ctr / main_loop_elapsed);
+    DEBUG("    - Extracting packet           : %8.2lf (%6.2lf%%)",
+          nfqinh_extract_ctr / 1e3,
+          1e2 * nfqinh_extract_ctr / main_loop_elapsed);
+    DEBUG("    - Delayed events              : %8.2lf (%6.2lf%%)",
+          nfqinh_delayedev_ctr / 1e3,
+          1e2 * nfqinh_delayedev_ctr / main_loop_elapsed);
+    DEBUG("    - Verdict calculation         : %8.2lf (%6.2lf%%)",
+          nfqinh_verdict_ctr / 1e3,
+          1e2 * nfqinh_verdict_ctr / main_loop_elapsed);
+    DEBUG("    - Verdict reporting           : %8.2lf (%6.2lf%%)",
+          nfqinh_report_ctr / 1e3,
+          1e2 * nfqinh_report_ctr / main_loop_elapsed);
+
+    DEBUG("  - Reading NFQ packet (FWD)      : %8.2lf (%6.2lf%%)",
+          nfq_read_fwd_ctr / 1e3, 1e2 * nfq_read_fwd_ctr / main_loop_elapsed);
+    DEBUG("  - Evaluating NFQ packet (FWD)   : %8.2lf (%6.2lf%%)",
+          nfq_eval_fwd_ctr / 1e3, 1e2 * nfq_eval_fwd_ctr / main_loop_elapsed);
+    DEBUG("    - Extracting packet           : %8.2lf (%6.2lf%%)",
+          nfqfwdh_extract_ctr / 1e3,
+          1e2 * nfqfwdh_extract_ctr / main_loop_elapsed);
+    DEBUG("    - Delayed events              : %8.2lf (%6.2lf%%)",
+          nfqfwdh_delayedev_ctr / 1e3,
+          1e2 * nfqfwdh_delayedev_ctr / main_loop_elapsed);
+    DEBUG("    - Verdict calculation         : %8.2lf (%6.2lf%%)",
+          nfqfwdh_verdict_ctr / 1e3,
+          1e2 * nfqfwdh_verdict_ctr / main_loop_elapsed);
+    DEBUG("    - Verdict reporting           : %8.2lf (%6.2lf%%)",
+          nfqfwdh_report_ctr / 1e3,
+          1e2 * nfqfwdh_report_ctr / main_loop_elapsed);
+
+    DEBUG("");
+    DEBUG("  - Packet HMAC verification      : %8.2lf (%6.2lf%%)",
+          verd_hmac_verif_ctr / 1e3,
+          1e2 * verd_hmac_verif_ctr / main_loop_elapsed);
+    DEBUG("  - L3,4 field extraction         : %8.2lf (%6.2lf%%)",
+          verd_field_extr_ctr / 1e3,
+          1e2 * verd_field_extr_ctr / main_loop_elapsed);
+    DEBUG("  - Previous obj hashset clear    : %8.2lf (%6.2lf%%)",
+          verd_hashes_clear_ctr / 1e3,
+          1e2 * verd_hashes_clear_ctr / main_loop_elapsed);
+    DEBUG("  - Network namespace lookup      : %8.2lf (%6.2lf%%)",
+          verd_netns_lookup_ctr / 1e3,
+          1e2 * verd_netns_lookup_ctr / main_loop_elapsed);
+    DEBUG("  - Network namespace change      : %8.2lf (%6.2lf%%)",
+          verd_netns_set_ctr / 1e3,
+          1e2 * verd_netns_set_ctr / main_loop_elapsed);
+    DEBUG("  - Pidset lookup                 : %8.2lf (%6.2lf%%)",
+          verd_pidset_lookup_ctr / 1e3,
+          1e2 * verd_pidset_lookup_ctr / main_loop_elapsed);
+    DEBUG("  - Pidset obj hash calculation   : %8.2lf (%6.2lf%%)",
+          verd_pidset_hashcalc_ctr / 1e3,
+          1e2 * verd_pidset_hashcalc_ctr / main_loop_elapsed);
+    DEBUG("    - Object hashset resize       : %8.2lf (%6.2lf%%)",
+          verd_hashes_resize_ctr / 1e3,
+          1e2 * verd_hashes_resize_ctr / main_loop_elapsed);
+    DEBUG("    - Reference hashset lookup    : %8.2lf (%6.2lf%%)",
+          verd_hashes_lookup_ctr / 1e3,
+          1e2 * verd_hashes_lookup_ctr / main_loop_elapsed);
+    DEBUG("    - Object hash calculation     : %8.2lf (%6.2lf%%)",
+          verd_hash_calc_ctr / 1e3,
+          1e2 * verd_hash_calc_ctr / main_loop_elapsed);
+    DEBUG("    - Object hash push to hashset : %8.2lf (%6.2lf%%)",
+          verd_hash_push_ctr / 1e3,
+          1e2 * verd_hash_push_ctr / main_loop_elapsed);
+    DEBUG("  - Object hash verification      : %8.2lf (%6.2lf%%)",
+          verd_hash_verif_ctr / 1e3,
+          1e2 * verd_hash_verif_ctr / main_loop_elapsed);
+
+    DEBUG("");
+    DEBUG("  - Total main loop time          : %8.2lf [ms]",
+          main_loop_elapsed / 1e3);
+    DEBUG("");
+    DEBUG("  - Packets processed (OUTPUT)    : %8lu (%8.2lf pps)",
+          nfqouth_packets_ctr,
+          1e6 * nfqouth_packets_ctr / main_loop_elapsed);
+    DEBUG("  - Packets processed (INPUT)     : %8lu (%8.2lf pps)",
+          nfqinh_packets_ctr,
+          1e6 * nfqinh_packets_ctr / main_loop_elapsed);
+    DEBUG("  - Packets processed (FORWARD)   : %8lu (%8.2lf pps)",
+          nfqfwdh_packets_ctr,
+          1e6 * nfqfwdh_packets_ctr / main_loop_elapsed);
 }
 
 /* handle_event - worker thread helper function
@@ -103,32 +243,52 @@ handle_event(int32_t fd)
 
     /* handle event depending on fd value */
     if (fd == us_csock_fd) {
+        ARM_TIMER(start_marker);
         ans = flt_handle_ctl(fd);
+        UPDATE_TIMER(fw_ctl_ctr, start_marker);
         RET(ans, -1, "unable to handle rule manager request");
     } elif (fd == netlink_fd) {
+        ARM_TIMER(start_marker);
         ans = nl_proc_ev_handle(fd);
+        UPDATE_TIMER(netlink_ctr, start_marker);
         RET(ans, -1, "unable to handle netlink event");
     } elif (fd == bpf_map_fd) {
+        ARM_TIMER(start_marker);
         ans = ring_buffer__consume(bpf_ringbuf);
+        UPDATE_TIMER(bpf_rb_ctr, start_marker);
         RET(ans < 0, -1, "failed to consume eBPF ringbuffer sample");
     } elif (fd == nfqueue_fd_out) {
+        ARM_TIMER(start_marker);
         rb = read(fd, pkt_buff, sizeof(pkt_buff));
+        UPDATE_TIMER(nfq_read_out_ctr, start_marker);
         RET(rb == -1, -1, "failed to read packet from nf queue (%s)",
             strerror(errno));
 
+        ARM_TIMER(start_marker);
         nfq_handle_packet(nf_handle_out, (char *) pkt_buff, rb);
+        UPDATE_TIMER(nfq_eval_out_ctr, start_marker);
     } elif (fd == nfqueue_fd_in) {
+        ARM_TIMER(start_marker);
         rb = read(fd, pkt_buff, sizeof(pkt_buff));
+        UPDATE_TIMER(nfq_read_in_ctr, start_marker);
         RET(rb == -1, -1, "failed to read packet from nf queue (%s)",
             strerror(errno));
 
+        ARM_TIMER(start_marker);
         nfq_handle_packet(nf_handle_in, (char *) pkt_buff, rb);
-    } elif (fd == nfqueue_fd_fwd) {
+        UPDATE_TIMER(nfq_eval_in_ctr, start_marker);
+    } elif (cfg.fwd_validate && fd == nfqueue_fd_fwd) {
+        ARM_TIMER(start_marker);
         rb = read(fd, pkt_buff, sizeof(pkt_buff));
+        UPDATE_TIMER(nfq_read_fwd_ctr, start_marker);
         RET(rb == -1, -1, "failed to read packet from nf queue (%s)",
             strerror(errno));
 
+        ARM_TIMER(start_marker);
         nfq_handle_packet(nf_handle_fwd, (char *) pkt_buff, rb);
+        UPDATE_TIMER(nfq_eval_fwd_ctr, start_marker);
+    } elif (fd == STDIN_FILENO) {
+        print_stats();
     }
 
     return 0;
@@ -564,9 +724,13 @@ main(int argc, char *argv[])
         }
     }
 
+    ARM_TIMER(program_start_marker);
+
     /* main loop */
     INFO("main loop starting");
     while (!terminate) {
+        ARM_TIMER(start_marker);
+
         /* prioritize event class if using epoll hierarchization */
         if (!cfg.uniform_prio) {
             /* wait for top level epoll event */
@@ -595,6 +759,8 @@ main(int argc, char *argv[])
         ans = epoll_wait(epoll_sel_fd, &epoll_ev[0], 1, -1);
         DIE(ans == -1 && errno != EINTR, "error waiting for epoll events (%s)",
             strerror(errno));
+
+        UPDATE_TIMER(epoll_ctr, start_marker);
 
         /* single-threaded path: handle it ourselves */
         if (!cfg.parallelize)

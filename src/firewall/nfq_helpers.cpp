@@ -38,6 +38,29 @@
 
 using namespace std;
 
+/* elapsed time counters */
+static struct timeval start_marker;
+
+uint64_t nfqinh_extract_ctr   = 0;
+uint64_t nfqinh_delayedev_ctr = 0;
+uint64_t nfqinh_verdict_ctr   = 0;
+uint64_t nfqinh_report_ctr    = 0;
+
+uint64_t nfqouth_extract_ctr   = 0;
+uint64_t nfqouth_delayedev_ctr = 0;
+uint64_t nfqouth_verdict_ctr   = 0;
+uint64_t nfqouth_report_ctr    = 0;
+
+uint64_t nfqfwdh_extract_ctr   = 0;
+uint64_t nfqfwdh_delayedev_ctr = 0;
+uint64_t nfqfwdh_verdict_ctr   = 0;
+uint64_t nfqfwdh_report_ctr    = 0;
+
+/* processed packets counters */
+uint64_t nfqinh_packets_ctr  = 0;
+uint64_t nfqouth_packets_ctr = 0;
+uint64_t nfqfwdh_packets_ctr = 0;
+
 /******************************************************************************
  ************************** PUBLIC API IMPLEMENTATION *************************
  ******************************************************************************/
@@ -61,6 +84,8 @@ int32_t nfq_in_handler(struct nfq_q_handle *qh,
     uint32_t                    verdict;    /* nfq verdict                */
     int32_t                     ans;        /* answer                     */
 
+    ARM_TIMER(start_marker);
+
     /* cast reference to nfq operational parameters */
     nfq_opp = (struct nfq_op_param *) data;
 
@@ -72,9 +97,15 @@ int32_t nfq_in_handler(struct nfq_q_handle *qh,
     ans = nfq_get_payload(nfd, (uint8_t **) &iph);
     RET(ans == -1, -1, "Unable to retrieve packet data (%s)", strerror(errno));
 
+    UPDATE_TIMER(nfqinh_extract_ctr, start_marker);
+    ARM_TIMER(start_marker);
+
     /* process any delayed events that have timed out */
     nl_delayed_ev_handle(nfq_opp->proc_delay);
     ebpf_delayed_ev_handle(nfq_opp->proc_delay);
+
+    UPDATE_TIMER(nfqinh_delayedev_ctr, start_marker);
+    ARM_TIMER(start_marker);
 
     /* get verdict for current packet or use default policy */
     verdict = get_verdict(iph, INPUT_CHAIN);
@@ -85,8 +116,17 @@ int32_t nfq_in_handler(struct nfq_q_handle *qh,
         /* DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP"); */
     }
 
+    UPDATE_TIMER(nfqinh_verdict_ctr, start_marker);
+    ARM_TIMER(start_marker);
+
     /* communicate packet verdict to nfq */
-    return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
+    ans = nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
+    ALERT(ans == -1, "Unable to set packet verdict");
+
+    UPDATE_TIMER(nfqinh_report_ctr, start_marker);
+    nfqinh_packets_ctr++;
+
+    return ans;
 }
 
 /* nfq_out_handler - output chain callback routine for NetfilterQueue
@@ -109,6 +149,8 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
     uint32_t                    verdict;    /* nfq verdict                */
     int32_t                     ans;        /* answer                     */
 
+    ARM_TIMER(start_marker);
+
     /* cast reference to nfq operational parameters */
     nfq_opp = (struct nfq_op_param *) data;
 
@@ -121,9 +163,15 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
     RET(ans == -1, -1, "Unable to retrieve packet data (%s)", strerror(errno));
     RET(ans != ntohs(iph->tot_len), -1, "Payload size & total len mismatch");
 
+    UPDATE_TIMER(nfqouth_extract_ctr, start_marker);
+    ARM_TIMER(start_marker);
+
     /* process any delayed events that have timed out */
     nl_delayed_ev_handle(nfq_opp->proc_delay);
     ebpf_delayed_ev_handle(nfq_opp->proc_delay);
+
+    UPDATE_TIMER(nfqouth_delayedev_ctr, start_marker);
+    ARM_TIMER(start_marker);
 
     /* get verdict for current packet or use default policy */
     verdict = get_verdict(iph, OUTPUT_CHAIN);
@@ -133,6 +181,9 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
     } else {
         /* DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP"); */
     }
+
+    UPDATE_TIMER(nfqouth_verdict_ctr, start_marker);
+    ARM_TIMER(start_marker);
 
     /* if verdict is positive, append signature option */
     if (verdict == NF_ACCEPT) {
@@ -145,13 +196,25 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
 
         /* communicate packet verdict to nfq, w/ signature */
         iph = (struct iphdr *) mod_data;
-        return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict,
+        ans = nfq_set_verdict(qh, ntohl(ph->packet_id), verdict,
                     ntohs(iph->tot_len), (const unsigned char *) mod_data);
+        ALERT(ans == -1, "Unable to set packet verdict");
+
+        UPDATE_TIMER(nfqouth_report_ctr, start_marker);
+        nfqouth_packets_ctr++;
+
+        return ans;
     }
 
 out_unmodified:
     /* communicate packet verdict to nfq, w/o signature */
-    return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
+    ans = nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
+    ALERT(ans == -1, "Unable to set packet verdict");
+
+    UPDATE_TIMER(nfqouth_report_ctr, start_marker);
+    nfqouth_packets_ctr++;
+
+    return ans;
 }
 
 /* nfq_fwd_handler - output chain callback routine for NetfilterQueue
@@ -173,6 +236,8 @@ int32_t nfq_fwd_handler(struct nfq_q_handle *qh,
     uint32_t                    verdict;    /* nfq verdict                */
     int32_t                     ans;        /* answer                     */
 
+    ARM_TIMER(start_marker);
+
     /* cast reference to nfq operational parameters */
     nfq_opp = (struct nfq_op_param *) data;
 
@@ -185,9 +250,15 @@ int32_t nfq_fwd_handler(struct nfq_q_handle *qh,
     RET(ans == -1, -1, "Unable to retrieve packet data (%s)", strerror(errno));
     RET(ans != ntohs(iph->tot_len), -1, "Payload size & total len mismatch");
 
+    UPDATE_TIMER(nfqfwdh_extract_ctr, start_marker);
+    ARM_TIMER(start_marker);
+
     /* process any delayed events that have timed out */
     nl_delayed_ev_handle(nfq_opp->proc_delay);
     ebpf_delayed_ev_handle(nfq_opp->proc_delay);
+
+    UPDATE_TIMER(nfqfwdh_delayedev_ctr, start_marker);
+    ARM_TIMER(start_marker);
 
     /* get verdict for current packet or use default policy */
     verdict = get_verdict(iph, FORWARD_CHAIN);
@@ -198,7 +269,16 @@ int32_t nfq_fwd_handler(struct nfq_q_handle *qh,
         /* DEBUG("%s", verdict == NF_ACCEPT ? "ACCEPT" : "DROP"); */
     }
 
+    UPDATE_TIMER(nfqfwdh_verdict_ctr, start_marker);
+    ARM_TIMER(start_marker);
+
     /* communicate packet verdict to nfq, w/o signature */
-    return nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
+    ans = nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
+    ALERT(ans == -1, "Unable to set packet verdict");
+
+    UPDATE_TIMER(nfqfwdh_report_ctr, start_marker);
+    nfqfwdh_packets_ctr++;
+
+    return ans;
 }
 

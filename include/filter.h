@@ -122,3 +122,20 @@ int32_t filter_init(uint8_t val_fwd, uint8_t val_in, uint8_t skip_ns_switch);
 uint32_t get_verdict(void *pkt, uint32_t chain);
 int32_t  flt_handle_ctl(int32_t us_csock_fd);
 
+/******************************************************************************
+ **************************** TIME COUNTER EXPORTS ****************************
+ ******************************************************************************/
+
+extern uint64_t verd_hmac_verif_ctr;
+extern uint64_t verd_field_extr_ctr;
+extern uint64_t verd_hashes_clear_ctr;
+extern uint64_t verd_netns_lookup_ctr;
+extern uint64_t verd_netns_set_ctr;
+extern uint64_t verd_pidset_lookup_ctr;
+extern uint64_t verd_pidset_hashcalc_ctr;
+extern uint64_t verd_hashes_resize_ctr;
+extern uint64_t verd_hashes_lookup_ctr;
+extern uint64_t verd_hash_calc_ctr;
+extern uint64_t verd_hash_push_ctr;
+extern uint64_t verd_hash_verif_ctr;
+

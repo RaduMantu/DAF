@@ -62,6 +62,23 @@ uint8_t skip_same_ns_switch; /* skip same netns switches            */
 uint64_t curr_netns_dev;
 uint64_t curr_netns_ino;
 
+/* elapsed time counters */
+static struct timeval start_marker;
+static struct timeval start_marker_2;
+
+uint64_t verd_hmac_verif_ctr      = 0;
+uint64_t verd_field_extr_ctr      = 0;
+uint64_t verd_hashes_clear_ctr    = 0;
+uint64_t verd_netns_lookup_ctr    = 0;
+uint64_t verd_netns_set_ctr       = 0;
+uint64_t verd_pidset_lookup_ctr   = 0;
+uint64_t verd_pidset_hashcalc_ctr = 0;
+uint64_t verd_hashes_resize_ctr   = 0;
+uint64_t verd_hashes_lookup_ctr   = 0;
+uint64_t verd_hash_calc_ctr       = 0;
+uint64_t verd_hash_push_ctr       = 0;
+uint64_t verd_hash_verif_ctr      = 0;
+
 /******************************************************************************
  ************************** INTERNAL HELPER FUNCTIONS *************************
  ******************************************************************************/
@@ -174,6 +191,8 @@ get_verdict(void *pkt, uint32_t chain)
     pid_set_p = NULL;
     known_l4  = 1;
 
+    ARM_TIMER(start_marker);
+
     /* depending on chain, perform signature validation if needed *
      * also, set the sel_chain ptr to the current chain           */
     switch (chain) {
@@ -229,6 +248,9 @@ get_verdict(void *pkt, uint32_t chain)
             RET(1, NF_MAX_VERDICT + 1, "invlid chain: %u", chain);
     }
 
+    UPDATE_TIMER(verd_hmac_verif_ctr, start_marker);
+    ARM_TIMER(start_marker);
+
     /* extract layer 3 features (for readablity & ease of access) */
     src_ip   = iph->saddr;
     dst_ip   = iph->daddr;
@@ -255,10 +277,14 @@ get_verdict(void *pkt, uint32_t chain)
             known_l4 = 0;
     }
 
+    UPDATE_TIMER(verd_field_extr_ctr, start_marker);
+
     /* for each rule in chain */
     for (auto& rule : *sel_chain) {
         /* clear any object hashes from previous iterations */
+        ARM_TIMER(start_marker);
         hashes.clear();
+        UPDATE_TIMER(verd_hashes_clear_ctr, start_marker);
 
         /* check layer 3 fields */
         if ((rule.flags & FLT_SRC_IP)
@@ -293,7 +319,10 @@ get_verdict(void *pkt, uint32_t chain)
             return (rule.verdict & VRD_ACCEPT) ? NF_ACCEPT : NF_DROP;
 
         /* get current rule's namespace descriptors */
+        ARM_TIMER(start_marker);
         auto [ netns_dev, netns_ino ] = nnc_fd_to_ns(rule.netns_fd);
+        UPDATE_TIMER(verd_netns_lookup_ctr, start_marker);
+
         RET(netns_dev == -1 && netns_ino == -1, NF_MAX_VERDICT + 1,
             "unable to get target namespace device & inode numbers");
 
@@ -304,7 +333,10 @@ get_verdict(void *pkt, uint32_t chain)
         || netns_dev != curr_netns_dev
         || netns_ino != curr_netns_ino)
         {
+            ARM_TIMER(start_marker);
             ans = setns(rule.netns_fd, CLONE_NEWNET);
+            UPDATE_TIMER(verd_netns_set_ctr, start_marker);
+
             RET(ans == -1, NF_MAX_VERDICT + 1,
                 "unable to switch namespaces (%s)", strerror(errno));
 
@@ -314,33 +346,50 @@ get_verdict(void *pkt, uint32_t chain)
 
         /* obtain set of potential endpoint processes ids                     *
          * failure to do so means that the match criteria can not be verified */
+        ARM_TIMER(start_marker);
         pid_set_p = sc_get_pid(l4_proto, src_ip, dst_ip,
                         chain == INPUT_CHAIN ? dst_port : src_port,
                         chain == INPUT_CHAIN ? src_port : dst_port,
                         netns_dev, netns_ino);
+        UPDATE_TIMER(verd_pidset_lookup_ctr, start_marker);
+
         if (!pid_set_p)
             continue;
 
         /* get hashes of memory mapped objects (alphabetically ordered by path) */
+        ARM_TIMER(start_marker_2);
+
+        ARM_TIMER(start_marker);
         hashes.resize(pid_set_p->size());
+        UPDATE_TIMER(verd_hashes_resize_ctr, start_marker);
         pid_idx = 0;
 
         for (auto pid_it : *pid_set_p) {
+            ARM_TIMER(start_marker);
             auto maps = hc_get_maps(pid_it);
+            UPDATE_TIMER(verd_hashes_lookup_ctr, start_marker);
 
             for (auto& map_it : maps) {
                 /* get sha256 digest of object (unlikely to fail -> report it) */
+                ARM_TIMER(start_marker);
                 md = hc_get_sha256((char *) map_it.c_str());
+                UPDATE_TIMER(verd_hash_calc_ctr, start_marker);
+
                 RET(!md, NF_MAX_VERDICT + 1, "could not get sha256 digest of %s",
                     map_it.c_str());
 
                 /* push hashes to vector in object's order in set */
+                ARM_TIMER(start_marker);
                 hashes[pid_idx].push_back(md);
+                UPDATE_TIMER(verd_hash_push_ctr, start_marker);
             }
 
             /* continue to next process */
             pid_idx++;
         }
+
+        UPDATE_TIMER(verd_pidset_hashcalc_ctr, start_marker_2);
+        ARM_TIMER(start_marker);
 
         /* check single hash match                                  *
          * NOTE: if verdict is DROP, one process is enough to match *
@@ -466,6 +515,8 @@ process_loop_end:
             /* if verdict is drop and no matches were found, go to next rule */
             continue;
         }
+
+        UPDATE_TIMER(verd_hash_verif_ctr, start_marker);
     }
 
     /* no rule was matched; fall back to chain default policy */

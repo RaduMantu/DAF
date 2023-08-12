@@ -1,9 +1,10 @@
-#pragma ocne
+#pragma once
 
-#include <stdio.h>      /* fprintf  */
-#include <stdlib.h>     /* exit     */
-#include <errno.h>      /* errno    */
-#include <string.h>     /* strerror */
+#include <stdio.h>      /* fprintf      */
+#include <stdlib.h>     /* exit         */
+#include <errno.h>      /* errno        */
+#include <string.h>     /* strerror     */
+#include <sys/time.h>   /* gettimeofday */
 
 /* compiler hints for branch prediciton */
 #ifndef likely
@@ -105,5 +106,26 @@
         fprintf(stdout, GREEN_B "[*] %s:%d ", __FILE__, __LINE__); \
         fprintf(stdout, UNSET_B msg);                              \
         fprintf(stdout, CLR "\n");                                 \
+    } while (0)
+
+
+/* ARM_TIMER - marks the start of a measured operation
+ *  @start : struct timeval that will hold starting time
+ */
+#define ARM_TIMER(start)            \
+    do {                            \
+        gettimeofday(&start, NULL); \
+    } while (0)
+
+/* UPDATE_TIMER - calculates elapsed time and increments counter
+ *  @counter : variable that holds _total_ elapsed us
+ *  @start   : struct timeval used with ARM_TIMER previously
+ */
+#define UPDATE_TIMER(counter, start)                 \
+    do {                                             \
+        struct timeval end;                          \
+        gettimeofday(&end, NULL);                    \
+        counter += (end.tv_sec - start.tv_sec) * 1e6 \
+                 + (end.tv_usec - start.tv_usec);    \
     } while (0)
 
