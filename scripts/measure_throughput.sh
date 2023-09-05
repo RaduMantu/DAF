@@ -82,6 +82,10 @@ if [ -z "${IPERF_IP}" ]; then
     exit -1
 fi
 
+# sync cached filesystem writes
+# might be relevant for NFS; don't want writebacks during experiment
+sync
+
 # set MTU on the target interface & wait for changes to take effect
 # NOTE: not bothering to reset it to initial value after the experiment
 if [ ! -z "${MTU}" ]; then
@@ -99,6 +103,7 @@ if [ ! -z "${FW_ENABLE}" ]; then
 
     # start firewall in background
     # NOTE: assuming that you're running this as root (EUID=0)
+    taskset 0x01                                                    \
     ./bin/app-fw ${NO_RESCAN} ${UNI_PRIO} ${SKIP_NS_SW} ${PART_CPY} \
         -e bin/syscall_probe.o                                      \
         &>>${FW_LOGFILE} &
