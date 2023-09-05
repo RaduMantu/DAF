@@ -27,6 +27,10 @@ ifeq ($(ENABLE_STATS),y)
 CXXFLAGS += -DENABLE_STATS
 endif
 
+ifeq ($(DISABLE_ORDERING),y)
+CXXFLAGS += -DDISABLE_ORDERING
+endif
+
 # identify sources and create object file targets
 #   main userspace app objects go into OBJ for remake caching
 #   eBPF objects go straight into BIN to be used by final app
@@ -43,7 +47,7 @@ OBJECTS_BPF = $(patsubst $(SRC)/kern/%.c, $(BIN)/%.o, $(SOURCES_BPF))
 .PRECIOUS: $(BIN)/ $(OBJ)/
 
 # phony targets
-.PHONY: build cert clean bear
+.PHONY: build cert clean bear help
 
 ################################################################################
 ############################### TOP LEVEL RULES ################################
@@ -51,6 +55,19 @@ OBJECTS_BPF = $(patsubst $(SRC)/kern/%.c, $(BIN)/%.o, $(SOURCES_BPF))
 
 # firewall binary generation
 build: $(BIN)/app-fw $(BIN)/ctl-fw $(OBJECTS_BPF)
+
+# help message
+help:
+	@echo "Targets"
+	@echo "  - build: generates firewall, companion app, eBPF program"
+	@echo "  - bear : invokes the build target; generates compile_commands.json"
+	@echo "  - clean: deletes binaries and object files"
+	@echo "  - help : show this message"
+	@echo ""
+	@echo "Variables (env / param)"
+	@echo "  - ENABLE_STATS    : records metrics; prints them on STDIN input"
+	@echo "  - DISABLE_ORDERING: use hashmap instead of RB tree"
+	@echo "                      disables aggregate hash matching"
 
 # certificate generation
 cert: $(CRT)/test.pem
