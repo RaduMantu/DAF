@@ -8,7 +8,7 @@ CRT = certs
 
 # compilation related parameters
 CXX      = clang++
-CXXFLAGS = -std=c++20 -ggdb
+CXXFLAGS = -std=c++20 -ggdb -O2
 LDFLAGS  = $(shell pkg-config --libs \
                 libnetfilter_queue   \
                 libbpf               \
@@ -21,6 +21,11 @@ CLANG      = clang
 LLC        = llc
 CLANGFLAGS = -D__KERNEL__ -D__BPF_TRACING__ -emit-llvm -O2 -fno-stack-protector -g
 LLCFLAGS   = -march=bpf -filetype=obj
+
+# build time options
+ifeq ($(ENABLE_STATS),y)
+CXXFLAGS += -DENABLE_STATS
+endif
 
 # identify sources and create object file targets
 #   main userspace app objects go into OBJ for remake caching

@@ -101,6 +101,7 @@ sigint_handler(int)
     terminate = true;
 }
 
+#ifdef ENABLE_STATS
 /* print_stats - shows elapsed time statistics on STDIN
  */
 static void
@@ -225,6 +226,7 @@ print_stats(void)
           nfqfwdh_packets_ctr,
           1e6 * nfqfwdh_packets_ctr / main_loop_elapsed);
 }
+#endif /* ENABLE_STATS */
 
 /* handle_event - worker thread helper function
  *  @fd : event source file descriptor
@@ -287,9 +289,12 @@ handle_event(int32_t fd)
         ARM_TIMER(start_marker);
         nfq_handle_packet(nf_handle_fwd, (char *) pkt_buff, rb);
         UPDATE_TIMER(nfq_eval_fwd_ctr, start_marker);
-    } elif (fd == STDIN_FILENO) {
+    }
+#ifdef ENABLE_STATS
+    elif (fd == STDIN_FILENO) {
         print_stats();
     }
+#endif /* ENABLE_STATS */
 
     return 0;
 }
@@ -647,6 +652,7 @@ main(int argc, char *argv[])
         INFO("netfilter forward queue added to epoll-p1 monitor");
     }
 
+#ifdef ENABLE_STATS
     /* add stdin to epoll watchlist (bottom prio)             *
      * NOTE: this will fail if ran from within a bash script  *
      *       stdin not used for anything at the moment anyway */
@@ -658,6 +664,7 @@ main(int argc, char *argv[])
     /* GOTO(ans == -1, clean_epoll_fd_p1, */
     /*     "failed to add stdin to epoll-p1 monitor"); */
     /* INFO("stdin added to epoll monitor"); */
+#endif /* ENABLE_STATS */
 
     /* add priority ordering epoll instances to top level epoll selector *
      * NOTE: this is predicated on actually having multiple priorities   *
