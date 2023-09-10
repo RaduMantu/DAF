@@ -125,12 +125,22 @@ if [ ! -z "${FW_ENABLE}" ]; then
     printf '>>> RULES = %u\n' ${FW_RULES}
 fi
 
-# start iperf client
-iperf3 -c ${IPERF_IP} ${IPERF_PORT} \
-       -t ${DURATION}               \
-       -i ${LOG_INTV}               \
-       -w ${WINDOW_SZ}              \
-       -f k
+# start iperf3 client
+# NOTE: may fail due to late routing table initialization after setting MTU
+STATUS=1
+while [[ ${STATUS} -ne 0 ]]; do
+    iperf3 -c ${IPERF_IP} ${IPERF_PORT} \
+           -t ${DURATION}               \
+           -i ${LOG_INTV}               \
+           -w ${WINDOW_SZ}              \
+           -f k
+    STATUS=$?
+
+    # sleep some more if need be
+    if [[ ${STATUS} -ne 0 ]]; then
+        sleep 1
+    fi
+done
 
 # print run delineator
 printf '~%.0s' {1..80}
