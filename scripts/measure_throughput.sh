@@ -16,6 +16,7 @@ usage() {
     echo '    DURATION   : iperf run duration             (default:10'
     echo '    LOG_INTV   : iperf logging interval         (default:1)'
     echo '    WINDOW_SZ  : iperf window size              (default:128K)'
+    echo '    IPERF_MSS  : iperf MSS                      (default:no)'
     echo ''
     echo '    FW_ENABLE  : enable firewall                (default:no)'
     echo '    FW_LOGFILE : firewall log file              (default:/dev/null)'
@@ -67,6 +68,12 @@ fi
 
 if [ ! -z "${PART_CPY}" ]; then
     PART_CPY='-P'
+fi
+
+if [ ! -z "${IPERF_MSS}" ]; then
+    printf '>>> MSS = %u\n' ${IPERF_MSS}
+
+    IPERF_MSS="-M ${IPERF_MSS}"
 fi
 
 # sanity check
@@ -133,7 +140,8 @@ while [[ ${STATUS} -ne 0 ]]; do
            -t ${DURATION}               \
            -i ${LOG_INTV}               \
            -w ${WINDOW_SZ}              \
-           -f k
+           -f k                         \
+           ${IPERF_MSS}
     STATUS=$?
 
     # sleep some more if need be
