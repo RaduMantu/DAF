@@ -70,7 +70,7 @@ if [ ! -z "${PART_CPY}" ]; then
     PART_CPY='-P'
 fi
 
-if [ ! -z "${IPERF_MSS}" ]; then
+if [[ ! -z "${IPERF_MSS}" && ${IPERF_MSS} -ge 88 ]; then
     printf '>>> MSS = %u\n' ${IPERF_MSS}
 
     IPERF_MSS="-M ${IPERF_MSS}"
