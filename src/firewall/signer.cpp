@@ -72,18 +72,19 @@ update_hmac_tcp(uint8_t *data, EVP_MD_CTX *md_ctx)
 
     /* update digest with immutable TCP fields *
      * TODO: add some flags as well            */
-    ans = EVP_DigestSignUpdate(md_ctx, &tcph->seq, sizeof(tcph->seq));
-    RET(ans != 1, -1, "unable to update digest");
+    /* ans = EVP_DigestSignUpdate(md_ctx, &tcph->seq, sizeof(tcph->seq)); */
+    /* RET(ans != 1, -1, "unable to update digest"); */
 
-    ans = EVP_DigestSignUpdate(md_ctx, &tcph->window, sizeof(tcph->window));
-    RET(ans != 1, -1, "unable to update digest");
+    /* ans = EVP_DigestSignUpdate(md_ctx, &tcph->window, sizeof(tcph->window)); */
+    /* RET(ans != 1, -1, "unable to update digest"); */
 
-    ans = EVP_DigestSignUpdate(md_ctx, &tcph->urg_ptr, sizeof(tcph->urg_ptr));
-    RET(ans != 1, -1, "unable to update digest");
+    /* ans = EVP_DigestSignUpdate(md_ctx, &tcph->urg_ptr, sizeof(tcph->urg_ptr)); */
+    /* RET(ans != 1, -1, "unable to update digest"); */
 
     /* update digest with payload */
     ans = EVP_DigestSignUpdate(md_ctx, &data[(iph->ihl + tcph->doff) * 4],
                 ntohs(iph->tot_len) - (iph->ihl + tcph->doff) * 4);
+    RET(ans != 1, -1, "unable to update digest");
 
     return 0;
 }
@@ -166,11 +167,11 @@ calc_hmac(uint8_t *data, uint8_t *sig_buf)
 
     /* update digest with IP-specific immutabile fields *
      * TODO: add bitfields */
-    ans = EVP_DigestSignUpdate(md_ctx, &iph->id, sizeof(iph->id));
-    GOTO(ans != 1, clean_ctx, "unable to update digest");
+    /* ans = EVP_DigestSignUpdate(md_ctx, &iph->id, sizeof(iph->id)); */
+    /* GOTO(ans != 1, clean_ctx, "unable to update digest"); */
 
-    ans = EVP_DigestSignUpdate(md_ctx, &iph->protocol, sizeof(iph->protocol));
-    GOTO(ans != 1, clean_ctx, "unable to update digest");
+    /* ans = EVP_DigestSignUpdate(md_ctx, &iph->protocol, sizeof(iph->protocol)); */
+    /* GOTO(ans != 1, clean_ctx, "unable to update digest"); */
 
     /* update digest with layer 4-specific fields & payload */
     ans = update_hmac_proto[iph->protocol](data, md_ctx);
