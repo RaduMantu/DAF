@@ -157,19 +157,28 @@ fi
 # start iperf3 client
 # NOTE: may fail due to late routing table initialization after setting MTU
 STATUS=1
+ATTEMPTS=0
 while [[ ${STATUS} -ne 0 ]]; do
-    iperf3 -c ${IPERF_IP} ${IPERF_PORT} \
-           -t ${DURATION}               \
-           -i ${LOG_INTV}               \
-           -f k                         \
-           ${WINDOW_SZ}                 \
-           ${IPERF_UDP}                 \
+    iperf3 -c ${IPERF_IP}%${IFACE} ${IPERF_PORT} \
+           -t ${DURATION}                        \
+           -i ${LOG_INTV}                        \
+           -f k                                  \
+           ${WINDOW_SZ}                          \
+           ${IPERF_UDP}                          \
            ${IPERF_MSS}
     STATUS=$?
 
     # sleep some more if need be
     if [[ ${STATUS} -ne 0 ]]; then
         sleep 1
+    fi
+
+    # break out if 3 attempts have already been tried
+    # NOTE: iperf3 might behave oddly when it comes to error codes sometimes
+    ((ATTEMPTS++))
+    if [[ ${ATTEMPTS} -eq 3 ]]; then
+        printf '>>> iperf3 failed to start %d times\n' "${ATTEMPTS}"
+        break
     fi
 done
 
