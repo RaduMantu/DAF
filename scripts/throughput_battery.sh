@@ -72,6 +72,30 @@ pktsig_battery() {
     done
 }
 
+buffer_var() {
+    for ((max_sz = 8; max_sz <= 32; max_sz++)); do
+        max_sz_bytes=$((max_sz * 1024 * 1024))
+
+        {
+            # set network core upper limits
+            # NOTE: defaults can be overwritten by tcp settings; these can't
+            sysctl -w net.core.wmem_max=${max_sz_bytes}
+            sysctl -w net.core.rmem_max=${max_sz_bytes}
+
+            # set default & max tcp buffer sizes to current upper limit
+            # NOTE: leave minimum buffer size unchanged (4K), just in case
+            sysctl -w net.ipv4.tcp_wmem="4096 ${max_sz_bytes} ${max_sz_bytes}"
+            sysctl -w net.ipv4.tcp_rmem="4096 ${max_sz_bytes} ${max_sz_bytes}"
+        } | tee -a logs/buffy_rule-1_fwRSuPU-${max_sz_bytes}.log
+
+        for ((mtu = 1000; mtu <= 9000; mtu += 1000)); do
+            MTU=${mtu} FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 \
+            ./scripts/measure_throughput.sh 2>&1 | tee -a logs/buffy_rule-1_fwRSuPU-${max_sz_bytes}.log
+        done
+    done
+
+}
+
 # input arg sanity check
 if [ $# -ne 1 ]; then
     echo 'Usage: ./throughput_battery.sh {tcp|udp|sign}'
@@ -89,8 +113,11 @@ case $1 in
     sign)
         pktsig_battery
         ;;
+    buffy)
+        buffer_var
+        ;;
     *)
-        echo 'Usage: ./throughput_battery.sh {tcp|udp|sign}'
+        echo 'Usage: ./throughput_battery.sh {tcp|udp|sign|buffy}'
         exit -1
 esac
 
