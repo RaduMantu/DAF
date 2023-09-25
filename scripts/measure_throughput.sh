@@ -15,16 +15,20 @@ usage() {
     echo '    IPERF_PORT : iperf server port              (default:5201)'
     echo '    DURATION   : iperf run duration             (default:10'
     echo '    LOG_INTV   : iperf logging interval         (default:1)'
-    echo '    WINDOW_SZ  : iperf window size              (default:128K)'
+    echo '    WINDOW_SZ  : iperf window size              (default:no)'
     echo '    IPERF_MSS  : iperf MSS                      (default:no)'
+    echo '    IPERF_UDP  : iperf UDP parallel streams     (default:no)'
+    echo '                 setting this value enables UDP'
+    echo '                 otherwise, client is TCP'
     echo ''
-    echo '    FW_ENABLE  : enable firewall                (default:no)'
-    echo '    FW_LOGFILE : firewall log file              (default:/dev/null)'
-    echo '    FW_RULES   : number of rules to insert      (default:0)'
-    echo '    NO_RESCAN  : prevent active va space rescan (default:no)'
-    echo '    UNI_PRIO   : set uniform event priority     (default:no)'
-    echo '    SKIP_NS_SW : skip useless netns switches    (default:no)'
-    echo '    PART_CPY   : partial packet copy to u/s     (default:no)'
+    echo '    FW_ENABLE  : enable firewall                  (default:no)'
+    echo '    FW_PKT_SIG : HMAC secret file; enable signing (default:no)'
+    echo '    FW_LOGFILE : firewall log file                (default:/dev/null)'
+    echo '    FW_RULES   : number of rules to insert        (default:0)'
+    echo '    NO_RESCAN  : prevent active va space rescan   (default:no)'
+    echo '    UNI_PRIO   : set uniform event priority       (default:no)'
+    echo '    SKIP_NS_SW : skip useless netns switches      (default:no)'
+    echo '    PART_CPY   : partial packet copy to u/s       (default:no)'
     echo ''
     echo 'For each type of experiment, collect data by appending script output'
     echo 'to the same log file. From there on, process the log file however'
@@ -49,7 +53,6 @@ REST_TIME=${REST_TIME:-3}
 IPERF_PORT=${IPERF_PORT:-5201}
 DURATION=${DURATION:-10}
 LOG_INTV=${LOG_INTV:-1}
-WINDOW_SZ=${WINDOW_SZ:-128K}
 FW_LOGFILE=${FW_LOGFILE:-/dev/null}
 FW_RULES=${FW_RULES:-0}
 
@@ -70,10 +73,29 @@ if [ ! -z "${PART_CPY}" ]; then
     PART_CPY='-P'
 fi
 
-if [[ ! -z "${IPERF_MSS}" && ${IPERF_MSS} -ge 88 ]; then
+# window size is optional!
+if [[ ! -z "${WINDOW_SZ}" ]]; then
+    WINDOW_SZ="-w ${WINDOW_SZ}"
+fi
+
+# ensure provided MSS is within iperf3 limits
+if [[ ! -z "${IPERF_MSS}" && \
+      ${IPERF_MSS} -ge 88 && \
+      ${IPERF_MSS} -le 9216 ]]; then
     printf '>>> MSS = %u\n' ${IPERF_MSS}
 
     IPERF_MSS="-M ${IPERF_MSS}"
+fi
+
+# enable UDP client instead of TCP
+if [[ ! -z "${IPERF_UDP}" && \
+      ${IPERF_UDP} -gt 0 ]]; then
+    IPERF_UDP="-u -b 0 -P ${IPERF_UDP}"
+fi
+
+# enable firewall packet signing
+if [[ ! -z "${FW_PKT_SIG}" ]]; then
+    FW_PKT_SIG="-t packet -s ${FW_PKT_SIG}"
 fi
 
 # sanity check
@@ -112,7 +134,7 @@ if [ ! -z "${FW_ENABLE}" ]; then
     # NOTE: assuming that you're running this as root (EUID=0)
     taskset 0x01                                                    \
     ./bin/app-fw ${NO_RESCAN} ${UNI_PRIO} ${SKIP_NS_SW} ${PART_CPY} \
-        -e bin/syscall_probe.o                                      \
+        -e bin/syscall_probe.o ${FW_PKT_SIG}                        \
         &>>${FW_LOGFILE} &
 
     # append harcoded rules to firewall
@@ -139,8 +161,9 @@ while [[ ${STATUS} -ne 0 ]]; do
     iperf3 -c ${IPERF_IP} ${IPERF_PORT} \
            -t ${DURATION}               \
            -i ${LOG_INTV}               \
-           -w ${WINDOW_SZ}              \
            -f k                         \
+           ${WINDOW_SZ}                 \
+           ${IPERF_UDP}                 \
            ${IPERF_MSS}
     STATUS=$?
 
