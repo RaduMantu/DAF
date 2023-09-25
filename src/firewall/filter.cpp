@@ -577,6 +577,11 @@ int32_t flt_handle_ctl(int32_t us_csock_fd)
         case CTL_INSERT:
             DEBUG("received INSERT request");
 
+#ifdef DISABLE_ORDERING
+            GOTO(reqm.rule.flags & FLT_AGGREGATE_HASH, clean_data_socket,
+                 "Aggregate hash verification disabled at build time");
+#endif /* DISABLE_ORDERING */
+
             /* get pointer to selected chain */
             if (reqm.msg.flags & CTL_INPUT)
                 sel_chain = &input_chain;

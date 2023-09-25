@@ -51,15 +51,6 @@ uint8_t retain_maps;    /* keep privously detected but now unmapped objects */
 uint8_t no_rescan;      /* prevent rescanning maps if set is non-empty      */
 
 /******************************************************************************
- ********************************* PUBLIC API *********************************
- ******************************************************************************/
-
-int32_t     hc_init(uint8_t _rm, uint8_t _pm);
-uint8_t     *hc_get_sha256(char *path);
-set<string> hc_get_maps(uint32_t pid);
-void        hc_proc_exit(uint32_t pid);
-
-/******************************************************************************
  ************************** INTERNAL HELPER FUNCTIONS *************************
  ******************************************************************************/
 
@@ -255,7 +246,11 @@ uint8_t *hc_get_sha256(char *path)
  *
  *  NOTE: the set returned is a copy; caller can do whatever he wants with it
  */
+#ifdef DISABLE_ORDERING
+unordered_set<string> hc_get_maps(uint32_t pid)
+#else
 set<string> hc_get_maps(uint32_t pid)
+#endif /* DISABLE_ORDERING */
 {
     static char   *buff = NULL;    /* buffer for contents of /proc/<pid>/maps */
     static size_t buff_sz = 0;     /* buffer size                             */
@@ -361,7 +356,11 @@ create_ordered_set:
      *                                                                        *
      * TODO: convert objs to set<string> across entire module?                *
      *       any performance cost? check this...                              */
+#ifdef DISABLE_ORDERING
+    return objs;
+#else
     return set(objs.begin(), objs.end());
+#endif /* DISABLE_ORDERING */
 }
 
 /* hc_proc_exit - process exits; free associated maps set
