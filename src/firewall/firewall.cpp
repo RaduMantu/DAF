@@ -427,6 +427,11 @@ main(int argc, char *argv[])
     DIE(ans == -1, "unable to set resource limit (%s)", strerror(errno));
     INFO("set new resource limits");
 
+    /* initialize packet verdict handling module */
+    ans = nfq_helper_init(cfg.batch_max_count, cfg.batch_timeout);
+    DIE(ans, "unable to initialize packet verdict handler module");
+    INFO("initialized packet verdict handler module");
+
     /* initialize packet filter settings */
     ans = filter_init(cfg.fwd_validate, cfg.in_validate, cfg.skip_ns_switch);
     DIE(ans, "unable to initialize filter");

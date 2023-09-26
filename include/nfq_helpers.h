@@ -13,6 +13,8 @@ struct nfq_op_param {
 };
 
 /* API */
+int32_t nfq_helper_init(uint32_t, uint64_t);
+
 int32_t nfq_in_handler(struct nfq_q_handle *qh,
                        struct nfgenmsg     *nfmsg,
                        struct nfq_data     *nfd,

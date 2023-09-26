@@ -22,6 +22,7 @@
 #include <netinet/tcp.h>    /* tcphdr        */
 #include <netinet/udp.h>    /* udphdr        */
 #include <string.h>         /* memmove       */
+#include <sys/time.h>       /* gettimeofday  */
 
 #include <set>              /* set           */
 #include <vector>           /* vector        */
@@ -61,9 +62,29 @@ uint64_t nfqinh_packets_ctr  = 0;
 uint64_t nfqouth_packets_ctr = 0;
 uint64_t nfqfwdh_packets_ctr = 0;
 
+/* operational parameters */
+static uint32_t batch_max_count = 1;    /* max num of batched packets     */
+static uint64_t batch_timeout   = -1;   /* batched verdict trnsm. timeout */
+
 /******************************************************************************
  ************************** PUBLIC API IMPLEMENTATION *************************
  ******************************************************************************/
+
+/* nfq_helper_init - packet verdict handler module initializer
+ *  @_batch_max_count : maximum number of batched packets
+ *  @_batch_timeout   : verdict transmission timeout for batch
+ *
+ *  @return : 0 if everything went well; -1 on error
+ */
+int32_t
+nfq_helper_init(uint32_t _batch_max_count,
+                uint64_t _batch_timeout)
+{
+    batch_max_count = _batch_max_count;
+    batch_timeout   = _batch_timeout;
+
+    return 0;
+}
 
 /* nfq_in_handler - input chain callback routine for NetfilterQueue
  *  @qh    : netfilter queue handle
@@ -142,12 +163,18 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
                     struct nfq_data         *nfd,
                     void                    *data)
 {
-    struct nfqnl_msg_packet_hdr *ph;        /* nfq meta header            */
-    struct iphdr                *iph;       /* ip header                  */
-    struct nfq_op_param         *nfq_opp;   /* nfq operational parameters */
-    void                        *mod_data;  /* modified packet buffer     */
-    uint32_t                    verdict;    /* nfq verdict                */
-    int32_t                     ans;        /* answer                     */
+    static uint32_t             buffered_pkts = 0;
+    static struct timeval       oldest_tv     = { 0 };
+    static uint32_t             prev_verdict  = NF_MAX_VERDICT;
+    struct timeval              tv;         /* current time                   */
+    struct nfqnl_msg_packet_hdr *ph;        /* nfq meta header                */
+    struct iphdr                *iph;       /* ip header                      */
+    struct tcphdr               *tcph;      /* tcp header                     */
+    struct nfq_op_param         *nfq_opp;   /* nfq operational parameters     */
+    void                        *mod_data;  /* modified packet buffer         */
+    uint32_t                    verdict;    /* nfq verdict                    */
+    uint32_t                    noskip;     /* don't skip verdict for reasons */
+    int32_t                     ans;        /* answer                         */
 
     ARM_TIMER(start_marker);
 
@@ -190,9 +217,11 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
         mod_data = add_sig((uint8_t *) iph);
         GOTO(!mod_data, out_unmodified, "unable to insert signature option");
 
-        /* late switch to unmodified path if dummy signer selected */
-        if (mod_data == iph)
+        /* late switch to unmodified path if dummy signer selected *
+         * or if verdict batching is enabled                       */
+        if (mod_data == iph || batch_max_count > 1) {
             goto out_unmodified;
+        }
 
         /* communicate packet verdict to nfq, w/ signature */
         iph = (struct iphdr *) mod_data;
@@ -207,10 +236,51 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
     }
 
 out_unmodified:
-    /* communicate packet verdict to nfq, w/o signature */
-    ans = nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
+    /* return value (if no verdicts are being sent this time) */
+    ans = 0;
+
+    /* force verdict if current packet has different verdict from batch */
+    if (verdict != prev_verdict && buffered_pkts > 0) {
+        ans = nfq_set_verdict_batch(qh, ntohl(ph->packet_id) - 1, prev_verdict);
+        ALERT(ans == -1, "Unable to set batch verdict");
+
+        prev_verdict  = verdict;
+        buffered_pkts = 0;
+        oldest_tv     = { 0 };
+    }
+
+    /* get current time */
+    gettimeofday(&tv, NULL);
+
+    /* remember timestamp for first packet in batch */
+    if (buffered_pkts++ == 0)
+        oldest_tv = tv;
+
+    /* prohibit verdict skip on TCP SYN */
+    noskip = 0;
+    if (iph->protocol == IPPROTO_TCP) {
+        tcph   = (struct tcphdr *) &((uint8_t *) iph)[iph->ihl * 4];
+        noskip = tcph->syn || tcph->psh;
+    }
+
+    /* skip verdict communication (if possible) */
+    if (!noskip
+    &&  buffered_pkts < batch_max_count
+    &&  (tv.tv_sec  - oldest_tv.tv_sec)  * 1'000'000 +
+        (tv.tv_usec - oldest_tv.tv_usec)
+        < batch_timeout)
+        goto skip_verdict;
+
+    /* batch max count / oldest verdict timeout exceeded */
+    ans = nfq_set_verdict_batch(qh, ntohl(ph->packet_id), verdict);
     ALERT(ans == -1, "Unable to set packet verdict");
 
+    /* WAR(">>> JUST PROCESSED BATCH OF %u", buffered_pkts); */
+
+    buffered_pkts = 0;
+    oldest_tv     = { 0 };
+
+skip_verdict:
     UPDATE_TIMER(nfqouth_report_ctr, start_marker);
     nfqouth_packets_ctr++;
 

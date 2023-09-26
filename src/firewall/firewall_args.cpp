@@ -83,6 +83,10 @@ static struct argp_option options[] = {
       "skip same netns switches on consecutive rules (default: no)" },
     { "partial-read", 'P', NULL, 0,
       "read only first 80 bytes of each packet (default: no)" },
+    { "batch-count", 'b', "NUM", 0,
+      "max number of batched verdicts (default: 1)" },
+    { "batch-timeout", 'B', "NUM", 0,
+      "batch verdict transmission timeout (default: huge) [μs]" },
 
     { 0 }
 };
@@ -123,6 +127,8 @@ struct config cfg  = {
     .uniform_prio     = 0,
     .skip_ns_switch   = 0,
     .partial_read     = 0,
+    .batch_max_count  = 1,
+    .batch_timeout    = 3'600'000'000,
     .sig_proto        = IPPROTO_IP,
     .sig_type         = SIG_NONE,
 };
@@ -259,6 +265,14 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         case 'P':
             cfg.partial_read = 1;
             break;
+        /* maximum number packets batched for verdict transmission */
+        case 'b':
+            sscanf(arg, "%u", &cfg.batch_max_count);
+            break;
+        /* verdict transmission timeout for batch */
+        case 'B':
+            sscanf(arg, "%lu", &cfg.batch_timeout);
+            break;
         /* this is invoked after all arguments have been parsed */
         case ARGP_KEY_END:
             /* final sanity check */
@@ -266,7 +280,12 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
                 "input and output queue numbers must be different");
 
             RET(cfg.sig_type != SIG_NONE && cfg.partial_read, EINVAL,
-                "cannot sign packets while using '-P'");
+                "cannot sign packets while performing partial reads");
+
+            RET(cfg.sig_type != SIG_NONE && cfg.batch_max_count > 1, EINVAL,
+                "cannot sign packets while batching verdicts");
+            RET(cfg.batch_max_count == 0, EINVAL,
+                "invalid value for batch_max_count");
 
             break;
         /* unknown argument */
