@@ -36,6 +36,10 @@ tcp_battery() {
 
             FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 \
             ./scripts/measure_throughput.sh 2>&1 | tee -a logs/rule-1_fwRSuP-${round}.log
+
+            FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 \
+            BATCH_SZ=100 BATCH_TO=1000                                            \
+            ./scripts/measure_throughput.sh 2>&1 | tee -a logs/rule-1_fwRSuPb-${round}.log
         done
     done
 }
@@ -57,7 +61,12 @@ udp_battery() {
 
             FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 IPERF_UDP=5 \
             ./scripts/measure_throughput.sh 2>&1                                              \
-            | tee -a logs/udp_rule-1_fwRSuPU-${round}.log
+            | tee -a logs/udp_rule-1_fwRSuP-${round}.log
+
+            FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 IPERF_UDP=5 \
+            BATCH_SZ=100 BATCH_TO=1000                                                        \
+            ./scripts/measure_throughput.sh 2>&1                                              \
+            | tee -a logs/udp_rule-1_fwRSuPb-${round}.log
         done
     done
 }

@@ -29,6 +29,8 @@ usage() {
     echo '    UNI_PRIO   : set uniform event priority       (default:no)'
     echo '    SKIP_NS_SW : skip useless netns switches      (default:no)'
     echo '    PART_CPY   : partial packet copy to u/s       (default:no)'
+    echo '    BATCH_SZ   : maximum verdict batch size       (default:1)'
+    echo '    BATCH_TO   : verdict transmission timeout     (default:3.6E9)'
     echo ''
     echo 'For each type of experiment, collect data by appending script output'
     echo 'to the same log file. From there on, process the log file however'
@@ -71,6 +73,14 @@ fi
 
 if [ ! -z "${PART_CPY}" ]; then
     PART_CPY='-P'
+fi
+
+if [ ! -z "${BATCH_SZ}" ]; then
+    BATCH_SZ="-b ${BATCH_SZ}"
+fi
+
+if [ ! -z "${BATCH_TO}" ]; then
+    BATCH_TO="-B ${BATCH_TO}"
 fi
 
 # window size is optional!
@@ -132,9 +142,11 @@ if [ ! -z "${FW_ENABLE}" ]; then
 
     # start firewall in background
     # NOTE: assuming that you're running this as root (EUID=0)
-    taskset 0x01                                                    \
-    ./bin/app-fw ${NO_RESCAN} ${UNI_PRIO} ${SKIP_NS_SW} ${PART_CPY} \
-        -e bin/syscall_probe.o ${FW_PKT_SIG}                        \
+    taskset 0x01                                           \
+    ./bin/app-fw                                           \
+        ${NO_RESCAN} ${UNI_PRIO} ${SKIP_NS_SW} ${PART_CPY} \
+        ${BATCH_SZ} ${BATCH_TO}                            \
+        -e bin/syscall_probe.o ${FW_PKT_SIG}               \
         &>>${FW_LOGFILE} &
 
     # append harcoded rules to firewall
