@@ -66,13 +66,18 @@ uint64_t nfqfwdh_packets_ctr = 0;
 static uint32_t batch_max_count = 1;    /* max num of batched packets     */
 static uint64_t batch_timeout   = -1;   /* batched verdict trnsm. timeout */
 
+static uint32_t            in_buffered_pkts = 0;
+static uint32_t            in_latest_pkt_id = 0;
+static uint32_t            in_prev_verdict  = NF_MAX_VERDICT;
+static struct timeval      in_oldest_tv     = { 0 };
+static struct nfq_q_handle *in_qh           = NULL;
+
 static uint32_t            out_buffered_pkts = 0;
-static uint32_t            out_prev_verdict  = NF_MAX_VERDICT;
 static uint32_t            out_latest_pkt_id = 0;
+static uint32_t            out_prev_verdict  = NF_MAX_VERDICT;
 static struct timeval      out_oldest_tv     = { 0 };
 static struct nfq_q_handle *out_qh           = NULL;
 
-__attribute__((unused)) static struct nfq_q_handle *in_qh = NULL;
 __attribute__((unused)) static struct nfq_q_handle *fwd_qh = NULL;
 
 /******************************************************************************
@@ -112,10 +117,30 @@ maybe_transmit_verdict(uint32_t force,
         ans = nfq_set_verdict_batch(out_qh, out_latest_pkt_id,
                                     out_prev_verdict);
         RET(ans == -1, -1, "unable to set batch verdict");
-        /* DEBUG(">>> verdict set for %u packets", out_buffered_pkts); */
+        /* DEBUG(">>> OUTPUT verdict set for %u packets", out_buffered_pkts); */
 
         /* reset batch counters (that matter) */
         out_buffered_pkts = 0;
+    }
+
+    /* check if INPUT batch warrants eviction                       *
+     * NOTE: not applicable if no packets are buffered at the moment */
+    elapsed_time = (tv.tv_sec  - in_oldest_tv.tv_sec) * 1'000'000 +
+                   (tv.tv_usec - in_oldest_tv.tv_usec);
+    if (chain_mask & (1 << INPUT_CHAIN)
+    &&  in_buffered_pkts != 0
+    &&  (force
+     ||  in_buffered_pkts >= batch_max_count
+     ||  elapsed_time >= batch_timeout))
+    {
+        /* transmit batch verdict */
+        ans = nfq_set_verdict_batch(in_qh, in_latest_pkt_id,
+                                    in_prev_verdict);
+        RET(ans == -1, -1, "unable to set batch verdict");
+        /* DEBUG(">>> INPUT verdict set for %u packets", in_buffered_pkts); */
+
+        /* reset batch counters (that matter) */
+        in_buffered_pkts = 0;
     }
 
     return 0;
@@ -157,11 +182,14 @@ int32_t nfq_in_handler(struct nfq_q_handle *qh,
                        struct nfq_data     *nfd,
                        void                *data)
 {
-    struct nfqnl_msg_packet_hdr *ph;        /* nfq meta header            */
-    struct iphdr                *iph;       /* ip header                  */
-    struct nfq_op_param         *nfq_opp;   /* nfq operational parameters */
-    uint32_t                    verdict;    /* nfq verdict                */
-    int32_t                     ans;        /* answer                     */
+    struct timeval              tv;         /* current time                   */
+    struct nfqnl_msg_packet_hdr *ph;        /* nfq meta header                */
+    struct iphdr                *iph;       /* ip header                      */
+    struct tcphdr               *tcph;      /* tcp header                     */
+    struct nfq_op_param         *nfq_opp;   /* nfq operational parameters     */
+    uint32_t                    verdict;    /* nfq verdict                    */
+    uint32_t                    force;      /* don't skip verdict for reasons */
+    int32_t                     ans;        /* answer                         */
 
     ARM_TIMER(start_marker);
 
@@ -198,9 +226,31 @@ int32_t nfq_in_handler(struct nfq_q_handle *qh,
     UPDATE_TIMER(nfqinh_verdict_ctr, start_marker);
     ARM_TIMER(start_marker);
 
-    /* communicate packet verdict to nfq */
-    ans = nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
-    ALERT(ans == -1, "unable to set packet verdict");
+    /* force verdict if current packet has different verdict from batch */
+    if (verdict != in_prev_verdict && in_buffered_pkts > 0) {
+        ans = maybe_transmit_verdict(1, 1 << INPUT_CHAIN);
+        ALERT(ans, "unable to set batch verdict");
+    }
+
+    /* get current time */
+    gettimeofday(&tv, NULL);
+
+    /* update batch stats */
+    in_prev_verdict  = verdict;
+    in_latest_pkt_id = ntohl(ph->packet_id);
+    if (in_buffered_pkts++ == 0)
+        in_oldest_tv = tv;
+
+    /* force verdict transmission on TCP SYN / PSH */
+    force = 0;
+    if (iph->protocol == IPPROTO_TCP) {
+        tcph   = (struct tcphdr *) &((uint8_t *) iph)[iph->ihl * 4];
+        force = tcph->syn || tcph->psh;
+    }
+
+    /* see if current packet puts us over the limit */
+    ans = maybe_transmit_verdict(force, 1 << INPUT_CHAIN);
+    ALERT(ans, "unable to set batch verdict");
 
     UPDATE_TIMER(nfqinh_report_ctr, start_marker);
     nfqinh_packets_ctr++;
@@ -309,7 +359,7 @@ out_unmodified:
     if (out_buffered_pkts++ == 0)
         out_oldest_tv = tv;
 
-    /* prohibit verdict skip on TCP SYN */
+    /* force verdict transmission on TCP SYN / PSH */
     force = 0;
     if (iph->protocol == IPPROTO_TCP) {
         tcph   = (struct tcphdr *) &((uint8_t *) iph)[iph->ihl * 4];
