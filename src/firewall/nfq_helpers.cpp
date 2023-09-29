@@ -66,9 +66,60 @@ uint64_t nfqfwdh_packets_ctr = 0;
 static uint32_t batch_max_count = 1;    /* max num of batched packets     */
 static uint64_t batch_timeout   = -1;   /* batched verdict trnsm. timeout */
 
+static uint32_t            out_buffered_pkts = 0;
+static uint32_t            out_prev_verdict  = NF_MAX_VERDICT;
+static uint32_t            out_latest_pkt_id = 0;
+static struct timeval      out_oldest_tv     = { 0 };
+static struct nfq_q_handle *out_qh           = NULL;
+
+__attribute__((unused)) static struct nfq_q_handle *in_qh = NULL;
+__attribute__((unused)) static struct nfq_q_handle *fwd_qh = NULL;
+
 /******************************************************************************
  ************************** PUBLIC API IMPLEMENTATION *************************
  ******************************************************************************/
+
+/* maybe_transmit_verdict - transmit verdict if limits exceeded
+ *  @force      : if !0, transmit verdict regardless of limits checks
+ *  @chain_mask : selects affected chains
+ *                  INPUT  = 1 << INPUT_CHAIN
+ *                  OUTPUT = 1 << OUTPUT_CHAIN
+ *
+ *  @return : 0 if everything went well; !0 otherwise
+ */
+int32_t
+maybe_transmit_verdict(uint32_t force,
+                       uint32_t chain_mask)
+{
+    struct timeval tv;              /* current time                       */
+    uint64_t       elapsed_time;    /* time since oldest pkt was received */
+    ssize_t        ans;             /* answer                             */
+
+    /* get current time */
+    gettimeofday(&tv, NULL);
+
+    /* check if OUTPUT batch warrants eviction                       *
+     * NOTE: not applicable if no packets are buffered at the moment */
+    elapsed_time = (tv.tv_sec  - out_oldest_tv.tv_sec) * 1'000'000 +
+                   (tv.tv_usec - out_oldest_tv.tv_usec);
+    if (chain_mask & (1 << OUTPUT_CHAIN)
+    &&  out_buffered_pkts != 0
+    &&  (force
+     ||  out_buffered_pkts >= batch_max_count
+     ||  elapsed_time >= batch_timeout))
+    {
+        /* transmit batch verdict */
+        ans = nfq_set_verdict_batch(out_qh, out_latest_pkt_id,
+                                    out_prev_verdict);
+        RET(ans == -1, -1, "unable to set batch verdict");
+        /* DEBUG(">>> verdict set for %u packets", out_buffered_pkts); */
+
+        /* reset batch counters (that matter) */
+        out_buffered_pkts = 0;
+    }
+
+    return 0;
+}
 
 /* nfq_helper_init - packet verdict handler module initializer
  *  @_batch_max_count : maximum number of batched packets
@@ -77,11 +128,18 @@ static uint64_t batch_timeout   = -1;   /* batched verdict trnsm. timeout */
  *  @return : 0 if everything went well; -1 on error
  */
 int32_t
-nfq_helper_init(uint32_t _batch_max_count,
-                uint64_t _batch_timeout)
+nfq_helper_init(uint32_t            _batch_max_count,
+                uint64_t            _batch_timeout,
+                struct nfq_q_handle *_in_qh,
+                struct nfq_q_handle *_out_qh,
+                struct nfq_q_handle *_fwd_qh)
 {
     batch_max_count = _batch_max_count;
     batch_timeout   = _batch_timeout;
+
+    in_qh  = _in_qh;
+    out_qh = _out_qh;
+    fwd_qh = _fwd_qh;
 
     return 0;
 }
@@ -112,11 +170,11 @@ int32_t nfq_in_handler(struct nfq_q_handle *qh,
 
     /* get nfq packet header (w/ metadata) */
     ph = nfq_get_msg_packet_hdr(nfd);
-    RET(!ph, -1, "Unable to retrieve packet meta hdr (%s)", strerror(errno));
+    RET(!ph, -1, "unable to retrieve packet meta hdr (%s)", strerror(errno));
 
     /* extract raw packet */
     ans = nfq_get_payload(nfd, (uint8_t **) &iph);
-    RET(ans == -1, -1, "Unable to retrieve packet data (%s)", strerror(errno));
+    RET(ans == -1, -1, "unable to retrieve packet data (%s)", strerror(errno));
 
     UPDATE_TIMER(nfqinh_extract_ctr, start_marker);
     ARM_TIMER(start_marker);
@@ -142,7 +200,7 @@ int32_t nfq_in_handler(struct nfq_q_handle *qh,
 
     /* communicate packet verdict to nfq */
     ans = nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
-    ALERT(ans == -1, "Unable to set packet verdict");
+    ALERT(ans == -1, "unable to set packet verdict");
 
     UPDATE_TIMER(nfqinh_report_ctr, start_marker);
     nfqinh_packets_ctr++;
@@ -163,9 +221,6 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
                     struct nfq_data         *nfd,
                     void                    *data)
 {
-    static uint32_t             buffered_pkts = 0;
-    static struct timeval       oldest_tv     = { 0 };
-    static uint32_t             prev_verdict  = NF_MAX_VERDICT;
     struct timeval              tv;         /* current time                   */
     struct nfqnl_msg_packet_hdr *ph;        /* nfq meta header                */
     struct iphdr                *iph;       /* ip header                      */
@@ -173,7 +228,7 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
     struct nfq_op_param         *nfq_opp;   /* nfq operational parameters     */
     void                        *mod_data;  /* modified packet buffer         */
     uint32_t                    verdict;    /* nfq verdict                    */
-    uint32_t                    noskip;     /* don't skip verdict for reasons */
+    uint32_t                    force;      /* don't skip verdict for reasons */
     int32_t                     ans;        /* answer                         */
 
     ARM_TIMER(start_marker);
@@ -183,11 +238,11 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
 
     /* get nfq packet header (w/ metadata) */
     ph = nfq_get_msg_packet_hdr(nfd);
-    RET(!ph, -1, "Unable to retrieve packet meta hdr (%s)", strerror(errno));
+    RET(!ph, -1, "unable to retrieve packet meta hdr (%s)", strerror(errno));
 
     /* extract raw packet */
     ans = nfq_get_payload(nfd, (uint8_t **) &iph);
-    RET(ans == -1, -1, "Unable to retrieve packet data (%s)", strerror(errno));
+    RET(ans == -1, -1, "unable to retrieve packet data (%s)", strerror(errno));
     RET(ans != ntohs(iph->tot_len), -1, "Payload size & total len mismatch");
 
     UPDATE_TIMER(nfqouth_extract_ctr, start_marker);
@@ -227,7 +282,7 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
         iph = (struct iphdr *) mod_data;
         ans = nfq_set_verdict(qh, ntohl(ph->packet_id), verdict,
                     ntohs(iph->tot_len), (const unsigned char *) mod_data);
-        ALERT(ans == -1, "Unable to set packet verdict");
+        ALERT(ans == -1, "unable to set packet verdict");
 
         UPDATE_TIMER(nfqouth_report_ctr, start_marker);
         nfqouth_packets_ctr++;
@@ -240,47 +295,31 @@ out_unmodified:
     ans = 0;
 
     /* force verdict if current packet has different verdict from batch */
-    if (verdict != prev_verdict && buffered_pkts > 0) {
-        ans = nfq_set_verdict_batch(qh, ntohl(ph->packet_id) - 1, prev_verdict);
-        ALERT(ans == -1, "Unable to set batch verdict");
-
-        prev_verdict  = verdict;
-        buffered_pkts = 0;
-        oldest_tv     = { 0 };
+    if (verdict != out_prev_verdict && out_buffered_pkts > 0) {
+        ans = maybe_transmit_verdict(1, 1 << OUTPUT_CHAIN);
+        ALERT(ans, "unable to set batch verdict");
     }
 
     /* get current time */
     gettimeofday(&tv, NULL);
 
-    /* remember timestamp for first packet in batch */
-    if (buffered_pkts++ == 0)
-        oldest_tv = tv;
+    /* update batch stats */
+    out_prev_verdict  = verdict;
+    out_latest_pkt_id = ntohl(ph->packet_id);
+    if (out_buffered_pkts++ == 0)
+        out_oldest_tv = tv;
 
     /* prohibit verdict skip on TCP SYN */
-    noskip = 0;
+    force = 0;
     if (iph->protocol == IPPROTO_TCP) {
         tcph   = (struct tcphdr *) &((uint8_t *) iph)[iph->ihl * 4];
-        noskip = tcph->syn || tcph->psh;
+        force = tcph->syn || tcph->psh;
     }
 
-    /* skip verdict communication (if possible) */
-    if (!noskip
-    &&  buffered_pkts < batch_max_count
-    &&  (tv.tv_sec  - oldest_tv.tv_sec)  * 1'000'000 +
-        (tv.tv_usec - oldest_tv.tv_usec)
-        < batch_timeout)
-        goto skip_verdict;
+    /* see if current packet puts us over the limit */
+    ans = maybe_transmit_verdict(force, 1 << OUTPUT_CHAIN);
+    ALERT(ans, "unable to set batch verdict");
 
-    /* batch max count / oldest verdict timeout exceeded */
-    ans = nfq_set_verdict_batch(qh, ntohl(ph->packet_id), verdict);
-    ALERT(ans == -1, "Unable to set packet verdict");
-
-    /* WAR(">>> JUST PROCESSED BATCH OF %u", buffered_pkts); */
-
-    buffered_pkts = 0;
-    oldest_tv     = { 0 };
-
-skip_verdict:
     UPDATE_TIMER(nfqouth_report_ctr, start_marker);
     nfqouth_packets_ctr++;
 
@@ -313,11 +352,11 @@ int32_t nfq_fwd_handler(struct nfq_q_handle *qh,
 
     /* get nfq packet header (w/ metadata) */
     ph = nfq_get_msg_packet_hdr(nfd);
-    RET(!ph, -1, "Unable to retrieve packet meta hdr (%s)", strerror(errno));
+    RET(!ph, -1, "unable to retrieve packet meta hdr (%s)", strerror(errno));
 
     /* extract raw packet */
     ans = nfq_get_payload(nfd, (uint8_t **) &iph);
-    RET(ans == -1, -1, "Unable to retrieve packet data (%s)", strerror(errno));
+    RET(ans == -1, -1, "unable to retrieve packet data (%s)", strerror(errno));
     RET(ans != ntohs(iph->tot_len), -1, "Payload size & total len mismatch");
 
     UPDATE_TIMER(nfqfwdh_extract_ctr, start_marker);
@@ -344,7 +383,7 @@ int32_t nfq_fwd_handler(struct nfq_q_handle *qh,
 
     /* communicate packet verdict to nfq, w/o signature */
     ans = nfq_set_verdict(qh, ntohl(ph->packet_id), verdict, 0, NULL);
-    ALERT(ans == -1, "Unable to set packet verdict");
+    ALERT(ans == -1, "unable to set packet verdict");
 
     UPDATE_TIMER(nfqfwdh_report_ctr, start_marker);
     nfqfwdh_packets_ctr++;

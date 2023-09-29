@@ -394,6 +394,7 @@ main(int argc, char *argv[])
     int32_t                   epoll_p1_fd;      /* priority 1 epoll fd        */
     int32_t                   epoll_sel_fd;     /* selected epoll fd          */
     struct epoll_event        epoll_ev[2];      /* epoll events               */
+    struct timespec           epoll_timeout;    /* timeout interval for epoll */
     struct sigaction          act;              /* signal response action     */
     struct rlimit             rlim;             /* resource limit             */
     struct bpf_object         *bpf_obj;         /* eBPF object file           */
@@ -426,11 +427,6 @@ main(int argc, char *argv[])
     ans = setrlimit(RLIMIT_MEMLOCK, &rlim);
     DIE(ans == -1, "unable to set resource limit (%s)", strerror(errno));
     INFO("set new resource limits");
-
-    /* initialize packet verdict handling module */
-    ans = nfq_helper_init(cfg.batch_max_count, cfg.batch_timeout);
-    DIE(ans, "unable to initialize packet verdict handler module");
-    INFO("initialized packet verdict handler module");
 
     /* initialize packet filter settings */
     ans = filter_init(cfg.fwd_validate, cfg.in_validate, cfg.skip_ns_switch);
@@ -567,7 +563,22 @@ main(int argc, char *argv[])
 
         nfqueue_fd_fwd = nfq_fd(nf_handle_fwd);
         INFO("obtained file descriptor of associated nfq forward socket");
+    } else {
+        nf_handle_fwd  = NULL;
+        nfq_handle_fwd = NULL;
+        nfqueue_fd_fwd = -1;
     }
+
+    /* initialize packet verdict handling module */
+    ans = nfq_helper_init(cfg.batch_max_count, cfg.batch_timeout,
+                          nfq_handle_in, nfq_handle_out, nfq_handle_fwd);
+    DIE(ans, "unable to initialize packet verdict handler module");
+    INFO("initialized packet verdict handler module");
+
+    /* set epoll timeout to that of batch timeout, if batching is enabled   *
+     * NOTE: assuming that the default value for the batch timeout is large */
+    epoll_timeout.tv_sec  = cfg.batch_timeout / 1'000'000;
+    epoll_timeout.tv_nsec = (cfg.batch_timeout % 1'000'000) * 1'000;
 
     /* create top level epoll instance */
     epoll_fd = epoll_create1(EPOLL_CLOEXEC);
@@ -746,9 +757,13 @@ main(int argc, char *argv[])
         /* prioritize event class if using epoll hierarchization */
         if (!cfg.uniform_prio) {
             /* wait for top level epoll event */
-            ans = epoll_wait(epoll_fd, epoll_ev, 2, -1);
+            ans = epoll_pwait2(epoll_fd, epoll_ev, 2, &epoll_timeout, NULL);
             DIE(ans == -1 && errno != EINTR, "error waiting for epoll events (%s)",
                 strerror(errno));
+
+            /* skip epolling next level if timeout occurred */
+            if (ans == 0)
+                goto no_event;
 
             /* determine if any of the (max 2) events were top priority */
             epoll_sel_fd  = epoll_p1_fd;
@@ -766,16 +781,28 @@ main(int argc, char *argv[])
             worker_thread = 0;
         }
 
-        /* we know that event is available on selected priority level *
-         * here we prioritize events relating to sockets, not NFQ     */
-        ans = epoll_wait(epoll_sel_fd, &epoll_ev[0], 1, -1);
+        /* we know that event is available on selected priority level     *
+         * here we prioritize events relating to sockets, not NFQ         *
+         *                                                                *
+         * NOTE: if priority hierarchy was not torn down due to uniform   *
+         *       prioritization, reaching this point guarantees that we   *
+         *       have an event ready to go, so it's safe to do a blocking *
+         *       epoll call; otherwise, we need to enforce the same       *
+         *       timeout as above                                         */
+        if (!cfg.uniform_prio)
+            ans = epoll_wait(epoll_sel_fd, &epoll_ev[0], 1, -1);
+        else
+            ans = epoll_pwait2(epoll_sel_fd, &epoll_ev[0], 1,
+                               &epoll_timeout, NULL);
         DIE(ans == -1 && errno != EINTR, "error waiting for epoll events (%s)",
             strerror(errno));
+        if (ans == 0)
+            goto no_event;
 
         UPDATE_TIMER(epoll_ctr, start_marker);
 
         /* single-threaded path: handle it ourselves */
-        if (!cfg.parallelize)
+        if (likely(!cfg.parallelize))
             handle_event(epoll_ev[0].data.fd);
         /* multi-threaded path: enqueue event for worker */
         else {
@@ -784,6 +811,13 @@ main(int argc, char *argv[])
             ans = pthread_cond_signal(&worker_ctx[worker_thread].cond);
             DIE(ans, "unable to notify worker (%s)", strerror(errno));
         }
+
+no_event:
+        /* after epolling for approx. batch timeout value, check if *
+         * verdicts need to be transmitted                          */
+        ans = maybe_transmit_verdict(0,
+                    (1 << INPUT_CHAIN) | (1 << OUTPUT_CHAIN));
+        ALERT(ans, "unable to set batch verdict");
     }
     WAR("exited main loop");
 

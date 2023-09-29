@@ -13,7 +13,14 @@ struct nfq_op_param {
 };
 
 /* API */
-int32_t nfq_helper_init(uint32_t, uint64_t);
+int32_t nfq_helper_init(uint32_t            _batch_max_count,
+                        uint64_t            _batch_timeout,
+                        struct nfq_q_handle *_in_qh,
+                        struct nfq_q_handle *_out_qh,
+                        struct nfq_q_handle *_fwd_qh);
+
+int32_t maybe_transmit_verdict(uint32_t force,
+                               uint32_t chain_mask);
 
 int32_t nfq_in_handler(struct nfq_q_handle *qh,
                        struct nfgenmsg     *nfmsg,
