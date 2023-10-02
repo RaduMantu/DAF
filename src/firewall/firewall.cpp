@@ -26,7 +26,7 @@
 #include <netinet/ip.h>         /* iphdr                              */
 #include <netinet/tcp.h>        /* tcphdr                             */
 #include <netinet/udp.h>        /* udphdr                             */
-#include <sys/socket.h>         /* socket                             */
+#include <sys/socket.h>         /* socket, getsockopt                 */
 #include <sys/un.h>             /* sockaddr_un                        */
 #include <sys/inotify.h>        /* inotify                            */
 #include <sys/epoll.h>          /* epoll                              */
@@ -34,6 +34,8 @@
 #include <bpf/libbpf.h>         /* eBPF API                           */
 #include <vector>               /* std::vector                        */
 #include <queue>                /* std::queue                         */
+
+#include <libnfnetlink/libnfnetlink.h>      /* nfnl_rcvbufsiz */
 
 #include "firewall_args.h"
 #include "netlink_helpers.h"
@@ -56,17 +58,20 @@ using namespace std;
 static bool terminate = false;    /* program pending termination */
 
 /* configured by main thread, used by workers */
-static int32_t            us_csock_fd;      /* unix connection socket     */
-static int32_t            netlink_fd;       /* netlink socket             */
-static int32_t            inotify_fd;       /* inotify file descriptor    */
-static int32_t            bpf_map_fd;       /* eBPF map file descriptor   */
-static int32_t            nfqueue_fd_in;    /* nfq input file descriptor  */
-static int32_t            nfqueue_fd_out;   /* nfq output file descriptor */
-static int32_t            nfqueue_fd_fwd;   /* nfq fwd file descriptor    */
-static struct nfq_handle  *nf_handle_in;    /* NFQUEUE input handle       */
-static struct nfq_handle  *nf_handle_out;   /* NFQUEUE output handle      */
-static struct nfq_handle  *nf_handle_fwd;   /* NFQUEUE forward handle     */
-static struct ring_buffer *bpf_ringbuf;     /* eBPF ring buffer reference */
+static int32_t            us_csock_fd;      /* unix connection socket       */
+static int32_t            netlink_fd;       /* netlink socket               */
+static int32_t            inotify_fd;       /* inotify file descriptor      */
+static int32_t            bpf_map_fd;       /* eBPF map file descriptor     */
+static int32_t            nfqueue_fd_in;    /* nfq input file descriptor    */
+static int32_t            nfqueue_fd_out;   /* nfq output file descriptor   */
+static int32_t            nfqueue_fd_fwd;   /* nfq fwd file descriptor      */
+static struct nfq_handle  *nf_handle_in;    /* NFQUEUE input handle         */
+static struct nfq_handle  *nf_handle_out;   /* NFQUEUE output handle        */
+static struct nfq_handle  *nf_handle_fwd;   /* NFQUEUE forward handle       */
+static struct ring_buffer *bpf_ringbuf;     /* eBPF ring buffer reference   */
+static uint32_t           nl_rcvsz_in;      /* netlink input socket size    */
+static uint32_t           nl_rcvsz_out;     /* netlink output socket size   */
+static uint32_t           nl_rcvsz_fwd;     /* netlink forward socket size  */
 
 /* elapsed time counters */
 static struct timeval program_start_marker;
@@ -228,6 +233,55 @@ print_stats(void)
 }
 #endif /* ENABLE_STATS */
 
+/* adjust_buffer_size - increases netlink socket recv buffer size
+ *  @fd     : file descriptor of socket
+ *  @handle : NetfilterQueue handle used internally for setsockopt()
+ *
+ *  return : 0 if everything went well; !0 otherwise
+ *
+ * NOTE: libnfnetlink will try to use SO_RCVBUFFORCE initially, thus overriding
+ *       the system maximum of `net.core.rmem_max`. normally, this should work
+ *       because in all likelyhood this process will have CAP_NET_ADMIN and the
+ *       kernel will be newer than 2.6.14.
+ *
+ * NOTE: although this function _technically_ doubles the current socket size,
+ *       the kernel will double it again to make space for bookkeeping overhead.
+ *       for more information on this, see the SO_RCVBUF entry in man.7 socket.
+ */
+static int32_t
+adjust_buffer_size(int32_t fd, struct nfq_handle *handle)
+{
+    ssize_t   ans;      /* answer               */
+    uint32_t  sock_sz;  /* current socket size  */
+    uint32_t  new_sz;   /* new socket size      */
+    socklen_t opt_len;  /* sockopt variable len */
+
+    /* get current netlink socket buffer size */
+    opt_len = sizeof(sock_sz);
+    ans = getsockopt(fd, SOL_SOCKET, SO_RCVBUF, (void *) &sock_sz, &opt_len);
+    RET(ans == -1, -1, "unable to determine socket buffer size (%s)",
+        strerror(errno));
+
+    /* clamp new socket size */
+    new_sz = sock_sz * 2;
+    if (new_sz > cfg.max_nl_bufsz)
+        new_sz = cfg.max_nl_bufsz;
+
+    /* avoid one or more setsockopt() calls if not necessary */
+    if (new_sz == sock_sz)
+        return 0;
+
+    /* attempt to double the socket size via the nfnl interface */
+    ans = nfnl_rcvbufsiz(nfq_nfnlh(handle), new_sz);
+    RET(ans == 0, -1, "unable to set netlink socket buffer size (%s)",
+        strerror(errno));
+
+    DEBUG("adjusted netlink socket buffer size: %u -> %u [bytes]",
+          sock_sz, new_sz);
+
+    return 0;
+}
+
 /* handle_event - worker thread helper function
  *  @fd : event source file descriptor
  *
@@ -239,9 +293,10 @@ print_stats(void)
 static int32_t
 handle_event(int32_t fd)
 {
-    int32_t ans;                    /* answer            */
-    ssize_t rb;                     /* read bytes        */
-    uint8_t pkt_buff[PKT_MAX_SZ];   /* nfq packet buffer */
+    int32_t           ans;                  /* answer            */
+    ssize_t           rb;                   /* read bytes        */
+    uint8_t           pkt_buff[PKT_MAX_SZ]; /* nfq packet buffer */
+    struct nfq_handle *handle;              /* nfq handle        */
 
     /* handle event depending on fd value */
     if (fd == us_csock_fd) {
@@ -263,8 +318,10 @@ handle_event(int32_t fd)
         ARM_TIMER(start_marker);
         rb = read(fd, pkt_buff, sizeof(pkt_buff));
         UPDATE_TIMER(nfq_read_out_ctr, start_marker);
-        RET(rb == -1, -1, "failed to read packet from nf queue (%s)",
-            strerror(errno));
+
+        handle = nf_handle_out;
+        GOTO(rb == -1, double_buffer_sz,
+             "failed to read packet from nf queue (%s)", strerror(errno));
 
         ARM_TIMER(start_marker);
         nfq_handle_packet(nf_handle_out, (char *) pkt_buff, rb);
@@ -273,8 +330,10 @@ handle_event(int32_t fd)
         ARM_TIMER(start_marker);
         rb = read(fd, pkt_buff, sizeof(pkt_buff));
         UPDATE_TIMER(nfq_read_in_ctr, start_marker);
-        RET(rb == -1, -1, "failed to read packet from nf queue (%s)",
-            strerror(errno));
+
+        handle = nf_handle_in;
+        GOTO(rb == -1, double_buffer_sz,
+             "failed to read packet from nf queue (%s)", strerror(errno));
 
         ARM_TIMER(start_marker);
         nfq_handle_packet(nf_handle_in, (char *) pkt_buff, rb);
@@ -283,8 +342,10 @@ handle_event(int32_t fd)
         ARM_TIMER(start_marker);
         rb = read(fd, pkt_buff, sizeof(pkt_buff));
         UPDATE_TIMER(nfq_read_fwd_ctr, start_marker);
-        RET(rb == -1, -1, "failed to read packet from nf queue (%s)",
-            strerror(errno));
+
+        handle = nf_handle_fwd;
+        GOTO(rb == -1, double_buffer_sz,
+             "failed to read packet from nf queue (%s)", strerror(errno));
 
         ARM_TIMER(start_marker);
         nfq_handle_packet(nf_handle_fwd, (char *) pkt_buff, rb);
@@ -297,6 +358,15 @@ handle_event(int32_t fd)
 #endif /* ENABLE_STATS */
 
     return 0;
+
+double_buffer_sz:
+    /* double netlink buffer size if overfull */
+    if (errno == ENOBUFS) {
+        ans = adjust_buffer_size(fd, handle);
+        RET(ans, -1, "unable to adjust socket buffer size");
+    }
+
+    return -1;
 }
 
 /* worker - worker thread main function

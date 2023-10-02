@@ -26,6 +26,7 @@ struct config {
     uint8_t  partial_read     : 1; /* read only 80 bytes of each packet      */
     uint32_t batch_max_count;      /* maximum number of batched packets      */
     uint64_t batch_timeout;        /* verdict transmission timeout for batch */
+    uint32_t max_nl_bufsz;         /* maximum netlink recv buffer size       */
     uint8_t  sig_proto;            /* protocol to host the signature         */
     sign_t   sig_type;             /* type of appended signature             */
 };

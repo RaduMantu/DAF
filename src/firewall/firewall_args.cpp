@@ -87,6 +87,8 @@ static struct argp_option options[] = {
       "max number of batched verdicts (default: 1)" },
     { "batch-timeout", 'B', "NUM", 0,
       "batch verdict transmission timeout (default: huge) [μs]" },
+    { "max-nl-bufsz", 'n', "NUM", 0,
+      "maximum netlink buffer size (default: 256M) [bytes]" },
 
     { 0 }
 };
@@ -129,6 +131,7 @@ struct config cfg  = {
     .partial_read     = 0,
     .batch_max_count  = 1,
     .batch_timeout    = 3'600'000'000,
+    .max_nl_bufsz     = 0x1000'0000,
     .sig_proto        = IPPROTO_IP,
     .sig_type         = SIG_NONE,
 };
@@ -272,6 +275,10 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         /* verdict transmission timeout for batch */
         case 'B':
             sscanf(arg, "%lu", &cfg.batch_timeout);
+            break;
+        /* maximum netlink socket recv buffer size */
+        case 'n':
+            sscanf(arg, "%u", &cfg.max_nl_bufsz);
             break;
         /* this is invoked after all arguments have been parsed */
         case ARGP_KEY_END:
