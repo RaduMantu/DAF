@@ -20,7 +20,7 @@
 #include <stdio.h>
 #include <stdint.h>             /* [u]int*_t                          */
 #include <signal.h>             /* signal, siginterrupt, pthread_kill */
-#include <unistd.h>             /* read, write, close, unlink         */
+#include <unistd.h>             /* read, write, close, unlink, nice   */
 #include <pthread.h>            /* pthread_*                          */
 #include <netinet/in.h>         /* IPPROTO_*                          */
 #include <netinet/ip.h>         /* iphdr                              */
@@ -414,6 +414,11 @@ main(int argc, char *argv[])
     ans = argp_parse(&argp, argc, argv, 0, 0, &cfg);
     DIE(ans, "error parsing cli arguments");
     INFO("parsed cli arguments");
+
+    /* set niceness to -20, regardless of inherited initial value */
+    ans = nice(-40);
+    ALERT(ans == -1, "unable to set niceness (%s)", strerror(errno));
+    INFO("process niceness set to -20");
 
     /* set gracious behaviour for Ctrl^C signal                            *
      * because SA_RESTART is not set, interrupted syscalls fail with EINTR */
