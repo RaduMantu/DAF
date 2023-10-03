@@ -14,32 +14,62 @@ fi
 
 
 tcp_battery() {
+    # set TCP socket buffer sizes (32M)
+    sysctl -w net.core.rmem_max=33554432
+    sysctl -w net.core.wmem_max=33554432
+
+    sysctl -w net.ipv4.tcp_rmem='4096 33554432 33554432'
+    sysctl -w net.ipv4.tcp_wmem='4096 33554432 33554432'
+
+    # run multiple rounds of experiments
+    # log name: <protocol>_<type>_{no,}fw-<optimizations>-<round>.log
     for ((round = 0; round < 5; round++)); do
         for ((mtu = 100; mtu <= ${MAX_MTU}; mtu += 10)); do
-            MTU=${mtu} \
-            ./scripts/measure_throughput.sh 2>&1 | tee -a logs/baseline_nofw-${round}.log
+            # no firewall, should go up to linerate
+            MTU=${mtu}                           \
+            ./scripts/measure_throughput.sh 2>&1 \
+            | tee -a logs/tcp_baseline_nofw-${round}.log
 
-            FW_ENABLE=1 FW_RULES=0 \
-            ./scripts/measure_throughput.sh 2>&1 | tee -a logs/baseline_fw-${round}.log
+            # firewall enabled but no rules; has all NFQ-related optimizations
+            FW_ENABLE=1 FW_RULES=0                         \
+            UNI_PRIO=1 PART_CPY=1 BATCH_SZ=100 BATCH_TO=50 \
+            ./scripts/measure_throughput.sh 2>&1           \
+            | tee -a logs/tcp_rule-0_fw-uPb-${round}.log
 
-            FW_ENABLE=1 FW_RULES=1 \
-            ./scripts/measure_throughput.sh 2>&1 | tee -a logs/rule-1_fw-${round}.log
+            # firewall w/ one rule; no optimizations
+            FW_ENABLE=1 FW_RULES=1               \
+            ./scripts/measure_throughput.sh 2>&1 \
+            | tee -a logs/tcp_rule-1_fw-${round}.log
 
-            FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 \
-            ./scripts/measure_throughput.sh 2>&1 | tee -a logs/rule-1_fwR-${round}.log
+            # previous + rescan prevention
+            FW_ENABLE=1 FW_RULES=1               \
+            NO_RESCAN=1                          \
+            ./scripts/measure_throughput.sh 2>&1 \
+            | tee -a logs/tcp_rule-1_fw-R-${round}.log
 
-            FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 \
-            ./scripts/measure_throughput.sh 2>&1 | tee -a logs/rule-1_fwRS-${round}.log
+            # previous + skipping namespace switches
+            FW_ENABLE=1 FW_RULES=1               \
+            NO_RESCAN=1 SKIP_NS_SW=1             \
+            ./scripts/measure_throughput.sh 2>&1 \
+            | tee -a logs/tcp_rule-1_fw-RS-${round}.log
 
-            FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 \
-            ./scripts/measure_throughput.sh 2>&1 | tee -a logs/rule-1_fwRSu-${round}.log
+            # previous + uniform event prioritization
+            FW_ENABLE=1 FW_RULES=1               \
+            NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1  \
+            ./scripts/measure_throughput.sh 2>&1 \
+            | tee -a logs/tcp_rule-1_fw-RSu-${round}.log
 
-            FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 \
-            ./scripts/measure_throughput.sh 2>&1 | tee -a logs/rule-1_fwRSuP-${round}.log
+            # previous + partial packet copy in userspace
+            FW_ENABLE=1 FW_RULES=1                         \
+            NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 \
+            ./scripts/measure_throughput.sh 2>&1           \
+            | tee -a logs/tcp_rule-1_fw-RSuP-${round}.log
 
-            FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 \
-            BATCH_SZ=100 BATCH_TO=1000                                            \
-            ./scripts/measure_throughput.sh 2>&1 | tee -a logs/rule-1_fwRSuPb-${round}.log
+            # previous + vedict batching (arbitrary parameters)
+            FW_ENABLE=1 FW_RULES=1                                                  \
+            NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 BATCH_SZ=100 BATCH_TO=50 \
+            ./scripts/measure_throughput.sh 2>&1                                    \
+            | tee -a logs/tcp_rule-1_fw-RSuPb-${round}.log
         done
     done
 }
