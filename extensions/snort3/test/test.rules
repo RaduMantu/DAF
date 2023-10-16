@@ -1,0 +1,5 @@
+alert ip (
+    msg:"DAF match!";
+    daf:be652ff1f91fffa7b5e3041e543d1a04fa651becdf7f2999bfe36b6f31cb76e2,match_trigger true;
+    sid:1000001;
+)
