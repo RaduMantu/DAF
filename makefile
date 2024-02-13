@@ -1,3 +1,15 @@
+
+################################################################################
+############################### CUSTOM FUNCTIONS ###############################
+################################################################################
+
+# checks if variable is defined
+check-def = $(if $(strip $($1)),,$(error "$1" is not defined))
+
+################################################################################
+############################# BUILD-TIME VARIABLES #############################
+################################################################################
+
 # important directories
 SRC = src
 BIN = bin
@@ -6,9 +18,12 @@ INC = include
 CNF = configs
 CRT = certs
 
+# make sure that base CPU frequency was provided
+$(call check-def,BASE_FREQ)
+
 # compilation related parameters
 CXX      = clang++
-CXXFLAGS = -std=c++20 -ggdb -O2
+CXXFLAGS = -std=c++20 -ggdb -O2 -DBASE_FREQ=$(BASE_FREQ)
 LDFLAGS  = $(shell pkg-config --libs \
                 libnetfilter_queue   \
                 libbpf               \

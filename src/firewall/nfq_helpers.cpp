@@ -22,7 +22,6 @@
 #include <netinet/tcp.h>    /* tcphdr        */
 #include <netinet/udp.h>    /* udphdr        */
 #include <string.h>         /* memmove       */
-#include <sys/time.h>       /* gettimeofday  */
 
 #include <set>              /* set           */
 #include <vector>           /* vector        */
@@ -69,13 +68,13 @@ static uint64_t batch_timeout   = -1;   /* batched verdict trnsm. timeout */
 static uint32_t            in_buffered_pkts = 0;
 static uint32_t            in_latest_pkt_id = 0;
 static uint32_t            in_prev_verdict  = NF_MAX_VERDICT;
-static struct timeval      in_oldest_tv     = { 0 };
+static uint64_t            in_oldest_ts     = 0;
 static struct nfq_q_handle *in_qh           = NULL;
 
 static uint32_t            out_buffered_pkts = 0;
 static uint32_t            out_latest_pkt_id = 0;
 static uint32_t            out_prev_verdict  = NF_MAX_VERDICT;
-static struct timeval      out_oldest_tv     = { 0 };
+static uint64_t            out_oldest_ts     = 0;
 static struct nfq_q_handle *out_qh           = NULL;
 
 __attribute__((unused)) static struct nfq_q_handle *fwd_qh = NULL;
@@ -96,17 +95,17 @@ int32_t
 maybe_transmit_verdict(uint32_t force,
                        uint32_t chain_mask)
 {
-    struct timeval tv;              /* current time                       */
+    tscval_t ts;                    /* current time                       */
     uint64_t       elapsed_time;    /* time since oldest pkt was received */
     ssize_t        ans;             /* answer                             */
 
     /* get current time */
-    gettimeofday(&tv, NULL);
+    rdtsc(ts.low, ts.high);
 
     /* check if OUTPUT batch warrants eviction                       *
      * NOTE: not applicable if no packets are buffered at the moment */
-    elapsed_time = (tv.tv_sec  - out_oldest_tv.tv_sec) * 1'000'000 +
-                   (tv.tv_usec - out_oldest_tv.tv_usec);
+    elapsed_time = (ts.raw - out_oldest_ts) * 1'000'000 / BASE_FREQ;
+
     if (chain_mask & (1 << OUTPUT_CHAIN)
     &&  out_buffered_pkts != 0
     &&  (force
@@ -125,8 +124,8 @@ maybe_transmit_verdict(uint32_t force,
 
     /* check if INPUT batch warrants eviction                       *
      * NOTE: not applicable if no packets are buffered at the moment */
-    elapsed_time = (tv.tv_sec  - in_oldest_tv.tv_sec) * 1'000'000 +
-                   (tv.tv_usec - in_oldest_tv.tv_usec);
+    elapsed_time = (ts.raw - in_oldest_ts) * 1'000'000 / BASE_FREQ;
+
     if (chain_mask & (1 << INPUT_CHAIN)
     &&  in_buffered_pkts != 0
     &&  (force
@@ -182,7 +181,7 @@ int32_t nfq_in_handler(struct nfq_q_handle *qh,
                        struct nfq_data     *nfd,
                        void                *data)
 {
-    struct timeval              tv;         /* current time                   */
+    tscval_t ts;                            /* current time                   */
     struct nfqnl_msg_packet_hdr *ph;        /* nfq meta header                */
     struct iphdr                *iph;       /* ip header                      */
     struct tcphdr               *tcph;      /* tcp header                     */
@@ -233,13 +232,13 @@ int32_t nfq_in_handler(struct nfq_q_handle *qh,
     }
 
     /* get current time */
-    gettimeofday(&tv, NULL);
+    rdtsc(ts.low, ts.high);
 
     /* update batch stats */
     in_prev_verdict  = verdict;
     in_latest_pkt_id = ntohl(ph->packet_id);
     if (in_buffered_pkts++ == 0)
-        in_oldest_tv = tv;
+        in_oldest_ts = ts.raw;
 
     /* force verdict transmission on TCP SYN / PSH */
     force = 0;
@@ -271,7 +270,7 @@ int32_t nfq_out_handler(struct nfq_q_handle *qh,
                     struct nfq_data         *nfd,
                     void                    *data)
 {
-    struct timeval              tv;         /* current time                   */
+    tscval_t                    ts;         /* current time                   */
     struct nfqnl_msg_packet_hdr *ph;        /* nfq meta header                */
     struct iphdr                *iph;       /* ip header                      */
     struct tcphdr               *tcph;      /* tcp header                     */
@@ -351,13 +350,13 @@ out_unmodified:
     }
 
     /* get current time */
-    gettimeofday(&tv, NULL);
+    rdtsc(ts.low, ts.high);
 
     /* update batch stats */
     out_prev_verdict  = verdict;
     out_latest_pkt_id = ntohl(ph->packet_id);
     if (out_buffered_pkts++ == 0)
-        out_oldest_tv = tv;
+        out_oldest_ts = ts.raw;
 
     /* force verdict transmission on TCP SYN / PSH */
     force = 0;

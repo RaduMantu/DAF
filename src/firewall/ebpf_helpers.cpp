@@ -87,19 +87,18 @@ int32_t process_ebpf_sample(void *ctx, void *data, size_t len)
  */
 void ebpf_delayed_ev_handle(uint64_t delta_t)
 {
-    struct timeval tv;
-    uint64_t       ct;
+    tscval_t ts;    /* cycles (or us) since system boot */
 
-    /* get current epoch time in microsecs */
-    gettimeofday(&tv, NULL);
-    ct = (uint64_t) (tv.tv_sec * 1e6 + tv.tv_usec);
+    /* get elapsed time since system boot in microsecs */
+    rdtsc(ts.low, ts.high);
+    ts.raw = ts.raw * 1'000'000 / BASE_FREQ;
 
     /* for each event, ordered by emplacement time */
     while (close_events.size()) {
         auto &ce = close_events.top();
 
         /* break if time since emplacement is lower than delta */
-        if (ct - ce.ts < delta_t)
+        if (ts.raw - ce.ts < delta_t)
             break;
 
         /* process event (timeout already occurred) */

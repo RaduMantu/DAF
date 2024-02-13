@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdio.h>      /* fprintf      */
+#include <stdint.h>     /* [u]int*_t    */
 #include <stdlib.h>     /* exit         */
 #include <errno.h>      /* errno        */
 #include <string.h>     /* strerror     */
@@ -19,6 +20,22 @@
 #ifndef elif
 #define elif else if
 #endif
+
+/* Read Timestamp Counter macro */
+#define rdtsc(eax, edx) \
+    asm volatile (      \
+        "rdtsc"         \
+        : "=a"(eax),    \
+          "=d"(edx))
+
+/* timstamp structure (compatible with rdtsc) */
+typedef union {
+    uint64_t raw;
+    struct {
+        uint32_t low;
+        uint32_t high;
+    };
+} tscval_t;
 
 /* set to 0 in order to suppress DEBUG output */
 #define DEBUG_EN 1

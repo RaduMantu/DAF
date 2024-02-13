@@ -1,7 +1,7 @@
 #pragma once
 
-#include <sys/time.h>   /* gettimeofday */
 #include <stdint.h>     /* [u]int*_t */
+#include "util.h"       /* rdtsc     */
 
 /* ts_event - timestamped event-related values (e.g.: pid)
  *
@@ -15,11 +15,15 @@ struct ts_event {
 
     ts_event(T _ev_val) : ev_val(_ev_val)
     {
-        struct timeval tv;
+        /* the TimeStamp Counter (hopefully) holds the number of invariable *
+         * base frequency cycles since system boot                          */
+        tscval_t epoch_cycles;
+
+        /* get cycle clount since boot */
+        rdtsc(epoch_cycles.low, epoch_cycles.high);
 
         /* set timestamp to epoch time in us */
-        gettimeofday(&tv, NULL);
-        ts = (uint64_t) (tv.tv_sec * 1e6 + tv.tv_usec);
+        ts = epoch_cycles.raw * 1'000'000 / BASE_FREQ;
     }
 
     bool operator < (const struct ts_event &x) const
