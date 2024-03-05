@@ -182,8 +182,6 @@ get_verdict(void *pkt, uint32_t chain)
     uint8_t                   known_l4;     /* supported l4 protocol         */
     size_t                    pid_idx;      /* index of analyzed pid         */
     uint8_t                   *md;          /* pointer to digest buffer      */
-    uint64_t                  netns_dev;    /* network namespace device num  */
-    uint64_t                  netns_ino;    /* network namespace inode num   */
 
     /* set initial values */
     iph  = (struct iphdr *) pkt;

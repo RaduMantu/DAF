@@ -125,7 +125,6 @@ struct config cfg  = {
     .no_rescan        = 0,
     .fwd_validate     = 0,
     .in_validate      = 0,
-    .parallelize      = 0,
     .uniform_prio     = 0,
     .skip_ns_switch   = 0,
     .partial_read     = 0,
@@ -251,10 +250,6 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         case 'R':
             cfg.retain_maps = 1;
             cfg.no_rescan   = 1;
-            break;
-        /* parallelize event processing */
-        case 'm':
-            cfg.parallelize = 1;
             break;
         /* assign uniform priorities to events */
         case 'u':

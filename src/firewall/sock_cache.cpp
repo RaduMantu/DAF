@@ -327,7 +327,6 @@ void sc_open_fd(uint32_t pid, uint8_t fd)
  */
 void sc_close_fd(uint32_t pid, uint8_t fd)
 {
-    int32_t  ans;
     uint32_t inode;
 
     /* try to find previous <pid,fd>:inode associations for this instance   *

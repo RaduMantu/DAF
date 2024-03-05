@@ -146,7 +146,6 @@ get_rootfs_mp(uint32_t pid, string &root_mount)
     struct libmnt_fs    *fs;                /* table entry filesystem       */
     struct libmnt_iter  *itr;               /* table iterator               */
     ssize_t             wb;                 /* number of written bytes      */
-    int32_t             ans;                /* answer                       */
     int32_t             ret = -1;           /* return value                 */
 
     /* create path to mountinfo file */

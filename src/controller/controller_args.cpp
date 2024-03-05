@@ -222,7 +222,7 @@ static int32_t _display_hashes(set<string>& paths)
 clean_ctx:
     EVP_MD_CTX_free(ctx);
 
-    return 0;
+    return ret;
 }
 
 /* _isnumber - checks if string is numeric
