@@ -40,6 +40,7 @@
 #include "netlink_helpers.h"
 #include "ebpf_helpers.h"
 #include "nfq_helpers.h"
+#include "uring_helpers.h"
 #include "sock_cache.h"
 #include "hash_cache.h"
 #include "filter.h"
@@ -73,7 +74,6 @@ static struct ring_buffer *bpf_ringbuf;     /* eBPF ring buffer reference   */
 static struct timeval program_start_marker;
 static struct timeval start_marker;
 
-static uint64_t epoll_ctr        = 0;
 static uint64_t fw_ctl_ctr       = 0;
 static uint64_t netlink_ctr      = 0;
 static uint64_t bpf_rb_ctr       = 0;
@@ -105,8 +105,6 @@ print_stats(void)
     read(STDIN_FILENO, buff, sizeof(buff));
 
     DEBUG("Elapsed times [ms]");
-    DEBUG("  - Waiting for epoll             : %8.2lf (%6.2lf%%)",
-          epoll_ctr / 1e3, 1e2 * epoll_ctr / main_loop_elapsed);
     DEBUG("  - Processing user command       : %8.2lf (%6.2lf%%)",
           fw_ctl_ctr / 1e3, 1e2 * fw_ctl_ctr / main_loop_elapsed);
     DEBUG("  - Processing netlink events     : %8.2lf (%6.2lf%%)",
@@ -268,94 +266,6 @@ adjust_buffer_size(int32_t fd, struct nfq_handle *handle)
     return 0;
 }
 
-/* handle_event - epoll event handling logic
- *  @fd : event source file descriptor
- *
- *  @return : 0 if everythig went well; -1 otherwise
- *
- * NOTE: always try to read PKT_MAX_SZ; NFQ will adjust the amount of
- *       transferred data depending on the nfq_set_mode() range arg.
- */
-static int32_t
-handle_event(int32_t fd)
-{
-    int32_t           ans;                  /* answer            */
-    ssize_t           rb;                   /* read bytes        */
-    uint8_t           pkt_buff[PKT_MAX_SZ]; /* nfq packet buffer */
-    struct nfq_handle *handle;              /* nfq handle        */
-
-    /* handle event depending on fd value */
-    if (fd == us_csock_fd) {
-        ARM_TIMER(start_marker);
-        ans = flt_handle_ctl(fd);
-        UPDATE_TIMER(fw_ctl_ctr, start_marker);
-        RET(ans, -1, "unable to handle rule manager request");
-    } elif (fd == netlink_fd) {
-        ARM_TIMER(start_marker);
-        ans = nl_proc_ev_handle(fd);
-        UPDATE_TIMER(netlink_ctr, start_marker);
-        RET(ans, -1, "unable to handle netlink event");
-    } elif (fd == bpf_map_fd) {
-        ARM_TIMER(start_marker);
-        ans = ring_buffer__consume(bpf_ringbuf);
-        UPDATE_TIMER(bpf_rb_ctr, start_marker);
-        RET(ans < 0, -1, "failed to consume eBPF ringbuffer sample");
-    } elif (fd == nfqueue_fd_out) {
-        ARM_TIMER(start_marker);
-        rb = read(fd, pkt_buff, sizeof(pkt_buff));
-        UPDATE_TIMER(nfq_read_out_ctr, start_marker);
-
-        handle = nf_handle_out;
-        GOTO(rb == -1, double_buffer_sz,
-             "failed to read packet from nf queue (%s)", strerror(errno));
-
-        ARM_TIMER(start_marker);
-        nfq_handle_packet(nf_handle_out, (char *) pkt_buff, rb);
-        UPDATE_TIMER(nfq_eval_out_ctr, start_marker);
-    } elif (fd == nfqueue_fd_in) {
-        ARM_TIMER(start_marker);
-        rb = read(fd, pkt_buff, sizeof(pkt_buff));
-        UPDATE_TIMER(nfq_read_in_ctr, start_marker);
-
-        handle = nf_handle_in;
-        GOTO(rb == -1, double_buffer_sz,
-             "failed to read packet from nf queue (%s)", strerror(errno));
-
-        ARM_TIMER(start_marker);
-        nfq_handle_packet(nf_handle_in, (char *) pkt_buff, rb);
-        UPDATE_TIMER(nfq_eval_in_ctr, start_marker);
-    } elif (cfg.fwd_validate && fd == nfqueue_fd_fwd) {
-        ARM_TIMER(start_marker);
-        rb = read(fd, pkt_buff, sizeof(pkt_buff));
-        UPDATE_TIMER(nfq_read_fwd_ctr, start_marker);
-
-        handle = nf_handle_fwd;
-        GOTO(rb == -1, double_buffer_sz,
-             "failed to read packet from nf queue (%s)", strerror(errno));
-
-        ARM_TIMER(start_marker);
-        nfq_handle_packet(nf_handle_fwd, (char *) pkt_buff, rb);
-        UPDATE_TIMER(nfq_eval_fwd_ctr, start_marker);
-    }
-#ifdef ENABLE_STATS
-    elif (fd == STDIN_FILENO) {
-        print_stats();
-    }
-#endif /* ENABLE_STATS */
-
-    return 0;
-
-double_buffer_sz:
-    /* double netlink buffer size if overfull */
-    if (errno == ENOBUFS) {
-        ans = adjust_buffer_size(fd, handle);
-        RET(ans, -1, "unable to adjust socket buffer size");
-    }
-
-    return -1;
-}
-
-
 /******************************************************************************
  **************************** PROGRAM ENTRY POINT *****************************
  ******************************************************************************/
@@ -370,12 +280,6 @@ int32_t
 main(int argc, char *argv[])
 {
     int32_t                   ans;              /* answer                     */
-    int32_t                   epoll_fd;         /* main epoll file descriptor */
-    int32_t                   epoll_p0_fd;      /* priority 0 (top) epoll fd  */
-    int32_t                   epoll_p1_fd;      /* priority 1 epoll fd        */
-    int32_t                   epoll_sel_fd;     /* selected epoll fd          */
-    struct epoll_event        epoll_ev[2];      /* epoll events               */
-    struct timespec           epoll_timeout;    /* timeout interval for epoll */
     struct sigaction          act;              /* signal response action     */
     struct rlimit             rlim;             /* resource limit             */
     struct bpf_object         *bpf_obj;         /* eBPF object file           */
@@ -386,6 +290,15 @@ main(int argc, char *argv[])
     struct nfq_q_handle       *nfq_handle_fwd;  /* netfilter forward handle   */
     struct nfq_op_param       nfq_opp;          /* nfq operational parameters */
     struct sockaddr_un        us_name;          /* unix socket name           */
+    struct io_uring           *ring;            /* io_uring object            */
+    struct io_uring_cqe       *cqe;             /* completion queue entry     */
+
+    /* async io buffers & other data */
+    uint8_t         pkt_buff_in[PKT_MAX_SZ];    /* INPUT packet buffer        */
+    uint8_t         pkt_buff_out[PKT_MAX_SZ];   /* OUTPUT packet buffer       */
+    uint8_t         pkt_buff_fwd[PKT_MAX_SZ];   /* FORWARD packet buffer      */
+    nldgram_t       nl_msg;                     /* netlink proc event message */
+
 
     /* parse command line arguments */
     ans = argp_parse(&argp, argc, argv, 0, 0, &cfg);
@@ -430,9 +343,15 @@ main(int argc, char *argv[])
     DIE(ans, "unable to initialize packet signer context");
     INFO("initialized packet signer context");
 
+    /* initialize io_uring module */
+    ring = uring_init(128, 3'600'000);
+    DIE(!ring, "unable to initialize io_uring");
+    INFO("initialized io_uring");
+
     /* create ctl unix socket */
     us_csock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    DIE(us_csock_fd == -1, "unable to open AF_UNIX socket (%s)", strerror(errno));
+    GOTO(us_csock_fd == -1, clean_iouring,
+         "unable to open AF_UNIX socket (%s)", strerror(errno));
     INFO("created ctl unix socket");
 
     /* bind ctl unix socket to name */
@@ -557,143 +476,15 @@ main(int argc, char *argv[])
     DIE(ans, "unable to initialize packet verdict handler module");
     INFO("initialized packet verdict handler module");
 
-    /* set epoll timeout to that of batch timeout, if batching is enabled   *
-     * NOTE: assuming that the default value for the batch timeout is large */
-    epoll_timeout.tv_sec  = cfg.batch_timeout / 1'000'000;
-    epoll_timeout.tv_nsec = (cfg.batch_timeout % 1'000'000) * 1'000;
-
-    /* create top level epoll instance */
-    epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    GOTO(epoll_fd == -1, clean_nf_queue_fwd, "failed to create epoll instance (%s)",
-        strerror(errno));
-    INFO("top level epoll instance created");
-
-    /* create priority ordering epoll instances */
-    epoll_p0_fd = epoll_create1(EPOLL_CLOEXEC);
-    GOTO(epoll_p0_fd == -1, clean_epoll_fd,
-        "failed to create epoll instance (%s)", strerror(errno));
-    INFO("priority-0 epoll instance created");
-
-    epoll_p1_fd = epoll_create1(EPOLL_CLOEXEC);
-    GOTO(epoll_p1_fd == -1, clean_epoll_fd_p0,
-        "failed to create epoll instance (%s)", strerror(errno));
-    INFO("priority-1 epoll instance created");
-
-    /* add ctl unix socket to epoll watchlist (top prio) */
-    epoll_ev[0].data.fd = us_csock_fd;
-    epoll_ev[0].events  = EPOLLIN;
-
-    ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, us_csock_fd, &epoll_ev[0]);
-    GOTO(ans == -1, clean_epoll_fd_p1,
-        "failed to add ctl unix socket to epoll monitor (%s)", strerror(errno));
-    INFO("ctl unix socket added to epoll-p0 monitor");
-
-    /* add netlink socket to epoll watchlist (top prio) */
-    epoll_ev[0].data.fd = netlink_fd;
-    epoll_ev[0].events  = EPOLLIN;
-
-    ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, netlink_fd, &epoll_ev[0]);
-    GOTO(ans == -1, clean_epoll_fd_p1,
-        "failed to add netlink to epoll monitor (%s)", strerror(errno));
-    INFO("netlink socket added to epoll-p0 monitor");
-
-    /* add inotify instance to epoll watchlist (top prio) */
-    epoll_ev[0].data.fd = inotify_fd;
-    epoll_ev[0].events  = EPOLLIN;
-
-    ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, inotify_fd, &epoll_ev[0]);
-    GOTO(ans == -1, clean_epoll_fd_p1,
-        "failed to add inotify to epoll monitor (%s)", strerror(errno));
-    INFO("inotify instance added to epoll-p0 monitor");
-
-    /* add eBPF ringbuffer to epoll watchlist (top prio) */
-    epoll_ev[0].data.fd = bpf_map_fd;
-    epoll_ev[0].events  = EPOLLIN;
-
-    ans = epoll_ctl(epoll_p0_fd, EPOLL_CTL_ADD, bpf_map_fd, &epoll_ev[0]);
-    GOTO(ans == -1, clean_epoll_fd_p1,
-        "failed to add eBPF ringbuffer to epoll monitor (%s)", strerror(errno));
-    INFO("eBPF ringbuffer added to epoll-p0 monitor");
-
-    /* add input netfilter queue to epoll watchlist (bottom prio) */
-    epoll_ev[0].data.fd = nfqueue_fd_in;
-    epoll_ev[0].events  = EPOLLIN;
-
-    ans = epoll_ctl(cfg.uniform_prio ? epoll_p0_fd : epoll_p1_fd,
-                    EPOLL_CTL_ADD, nfqueue_fd_in, &epoll_ev[0]);
-    GOTO(ans == -1, clean_epoll_fd_p1,
-        "failed to add netfilter input queue to epoll-p1 monitor (%s)",
-        strerror(errno));
-    INFO("netfilter input queue added to epoll-p1 monitor");
-
-    /* add output netfilter queue to epoll watchlist (bottom prio) */
-    epoll_ev[0].data.fd = nfqueue_fd_out;
-    epoll_ev[0].events  = EPOLLIN;
-
-    ans = epoll_ctl(cfg.uniform_prio ? epoll_p0_fd : epoll_p1_fd,
-                    EPOLL_CTL_ADD, nfqueue_fd_out, &epoll_ev[0]);
-    GOTO(ans == -1, clean_epoll_fd_p1,
-        "failed to add netfilter output queue to epoll-p1 monitor (%s)",
-        strerror(errno));
-    INFO("netfilter output queue added to epoll-p1 monitor");
-
-    /* add forward netfilter queue to epoll watchlist (bottom prio) */
-    if (cfg.fwd_validate) {
-        epoll_ev[0].data.fd = nfqueue_fd_fwd;
-        epoll_ev[0].events  = EPOLLIN;
-
-        ans = epoll_ctl(cfg.uniform_prio ? epoll_p0_fd : epoll_p1_fd,
-                        EPOLL_CTL_ADD, nfqueue_fd_fwd, &epoll_ev[0]);
-        GOTO(ans == -1, clean_epoll_fd_p1,
-             "failed to add netfilter forward queue to epoll-p1 monitor (%s)",
-             strerror(errno));
-        INFO("netfilter forward queue added to epoll-p1 monitor");
-    }
-
-#ifdef ENABLE_STATS
-    /* add stdin to epoll watchlist (bottom prio)             *
-     * NOTE: this will fail if ran from within a bash script  *
-     *       stdin not used for anything at the moment anyway */
-    epoll_ev[0].data.fd = STDIN_FILENO;
-    epoll_ev[0].events  = EPOLLIN;
-
-    ans = epoll_ctl(cfg.uniform_prio ? epoll_p0_fd : epoll_p0_fd,
-                    EPOLL_CTL_ADD, STDIN_FILENO, &epoll_ev[0]);
-    /* GOTO(ans == -1, clean_epoll_fd_p1, */
-    /*     "failed to add stdin to epoll-p1 monitor"); */
-    /* INFO("stdin added to epoll monitor"); */
-#endif /* ENABLE_STATS */
-
-    /* add priority ordering epoll instances to top level epoll selector *
-     * NOTE: this is predicated on actually having multiple priorities   *
-     *       setting `-u` makes the epoll hierarchy redundant            */
-    if (!cfg.uniform_prio) {
-        epoll_ev[0].data.fd = epoll_p0_fd;
-        epoll_ev[0].events  = EPOLLIN;
-
-        ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, epoll_p0_fd, &epoll_ev[0]);
-        GOTO(ans == -1, clean_epoll_fd_p1,
-            "failed to add epoll-p0 to epoll monitor (%s)", strerror(errno));
-        INFO("epoll-p0 added to top level epoll monitor");
-
-        epoll_ev[0].data.fd = epoll_p1_fd;
-        epoll_ev[0].events  = EPOLLIN;
-
-        ans = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, epoll_p1_fd, &epoll_ev[0]);
-        GOTO(ans == -1, clean_epoll_fd_p1,
-            "failed to add epoll-p1 to epoll monitor (%s)", strerror(errno));
-        INFO("epoll-p1 added to top level epoll monitor");
-    }
-
     /* listen for new connections on ctl unix socket */
     ans = listen(us_csock_fd, 1);
-    GOTO(ans == -1, clean_epoll_fd_p1, "failed to listen on unix socket (%s)",
+    GOTO(ans == -1, clean_nf_queue_fwd, "failed to listen on unix socket (%s)",
         strerror(errno));
     INFO("listening for new connections on ctl unix socket");
 
     /* subscribe to netlink proc events */
     ans = nl_proc_ev_subscribe(netlink_fd, true);
-    GOTO(ans == -1, clean_epoll_fd_p1,
+    GOTO(ans == -1, clean_nf_queue_fwd,
         "failed to subscribe to netlink proc events");
     INFO("now subscribed to netlink proc events");
 
@@ -707,65 +498,182 @@ main(int argc, char *argv[])
         bpf_links.push_back(bpf_link);
     }
 
-    ARM_TIMER(program_start_marker);
+    /******************************* main loop ********************************/
 
-    /* main loop */
     INFO("main loop starting");
+
+    /* place initial requests on the submission queue */
+    uring_add_read_request(NFQ_INPUT_READ,
+            nfqueue_fd_in, pkt_buff_in, sizeof(pkt_buff_in));
+
+    uring_add_read_request(NFQ_OUTPUT_READ,
+            nfqueue_fd_out, pkt_buff_out, sizeof(pkt_buff_out));
+
+    if (cfg.fwd_validate) {
+        uring_add_read_request(NFQ_FORWARD_READ,
+                nfqueue_fd_fwd, pkt_buff_fwd, sizeof(pkt_buff_fwd));
+    }
+
+    uring_add_poll_request(BPF_RINGBUF_POLL, bpf_map_fd, EPOLLIN);
+
+    uring_add_read_request(NETLINK_PROC_READ,
+            netlink_fd, &nl_msg, sizeof(nl_msg));
+
+    uring_add_accept_request(CTL_ACCEPT, us_csock_fd, NULL, NULL);
+
+    /* await event completions */
     while (!terminate) {
-        ARM_TIMER(start_marker);
+        /* check if new completion queue entry is available */
+        ans = io_uring_peek_cqe(ring, &cqe);
+        if (ans)
+            goto try_verdict_transmission;
 
-        /* prioritize event class if using epoll hierarchization */
-        if (!cfg.uniform_prio) {
-            /* wait for top level epoll event */
-            ans = epoll_pwait2(epoll_fd, epoll_ev, 2, &epoll_timeout, NULL);
-            GOTO(ans == -1 && errno != EINTR, clean_bpf_links,
-                 "error waiting for epoll events (%s)", strerror(errno));
-
-            /* skip epolling next level if timeout occurred */
-            if (ans == 0)
-                goto no_event;
-
-            /* determine if any of the (max 2) events were top priority */
-            epoll_sel_fd  = epoll_p1_fd;
-            for (size_t i = 0; i < ans; i++)
-                if (epoll_ev[i].data.fd == epoll_p0_fd) {
-                    epoll_sel_fd  = epoll_p0_fd;
-                    break;
+        /* match CQE with origin subsystem */
+        switch (cqe->user_data) {
+            case NFQ_INPUT_READ:
+                /* double netlink socket if overfull */
+                if (cqe->res == -ENOBUFS) {
+                    WAR("netlink socket overfull; adjusting buffer size");
+                    ans = adjust_buffer_size(nfqueue_fd_in, nf_handle_in);
+                    GOTO(ans, clean_bpf_links,
+                         "unable to adjust socket buffer size");
                 }
+                /* report unexpected error, but try again */
+                elif (cqe->res < 0) {
+                    ERROR("unable to read packet from nf queue (%s)",
+                          strerror(-cqe->res));
+                }
+                /* establish verdict for packet */
+                else {
+                    nfq_handle_packet(nf_handle_in, (char *) pkt_buff_in,
+                                      cqe->res);
+                }
+
+                /* refresh read request */
+                uring_add_read_request(NFQ_INPUT_READ,
+                        nfqueue_fd_in, pkt_buff_in, sizeof(pkt_buff_in));
+
+                break;
+            case NFQ_OUTPUT_READ:
+                /* double netlink socket if overfull */
+                if (cqe->res == -ENOBUFS) {
+                    WAR("netlink socket overfull; adjusting buffer size");
+                    ans = adjust_buffer_size(nfqueue_fd_out, nf_handle_out);
+                    GOTO(ans, clean_bpf_links,
+                         "unable to adjust socket buffer size");
+                }
+                /* report unexpected error, but try again */
+                elif (cqe->res < 0) {
+                    ERROR("unable to read packet from nf queue (%s)",
+                          strerror(-cqe->res));
+                }
+                /* establish verdict for packet */
+                else {
+                    nfq_handle_packet(nf_handle_out, (char *) pkt_buff_out,
+                                      cqe->res);
+                }
+
+                /* refresh read request */
+                uring_add_read_request(NFQ_OUTPUT_READ,
+                        nfqueue_fd_out, pkt_buff_out, sizeof(pkt_buff_out));
+
+                break;
+            case NFQ_FORWARD_READ:
+                /* double netlink socket if overfull */
+                if (cqe->res == -ENOBUFS) {
+                    WAR("netlink socket overfull; adjusting buffer size");
+                    ans = adjust_buffer_size(nfqueue_fd_fwd, nf_handle_fwd);
+                    GOTO(ans, clean_bpf_links,
+                         "unable to adjust socket buffer size");
+                }
+                /* report unexpected error, but try again */
+                elif (cqe->res < 0) {
+                    ERROR("unable to read packet from nf queue (%s)",
+                          strerror(-cqe->res));
+                }
+                /* establish verdict for packet */
+                else {
+                    nfq_handle_packet(nf_handle_fwd, (char *) pkt_buff_fwd,
+                                      cqe->res);
+                }
+
+                /* refresh read request */
+                uring_add_read_request(NFQ_FORWARD_READ,
+                        nfqueue_fd_fwd, pkt_buff_fwd, sizeof(pkt_buff_fwd));
+
+                break;
+            case BPF_RINGBUF_POLL:
+                /* report unexpected error, but try again */
+                if (cqe->res < 0) {
+                    ERROR("unable to poll eBPF ring buffer fd (%s)",
+                          strerror(-cqe->res));
+                }
+                /* consume new sample */
+                else {
+                    ans = ring_buffer__consume(bpf_ringbuf);
+                    GOTO(ans < 0, clean_bpf_links,
+                         "failed to consume eBPF ring buffer sample");
+                }
+
+                /* refresh poll request */
+                uring_add_poll_request(BPF_RINGBUF_POLL, bpf_map_fd, EPOLLIN);
+
+                break;
+            case NETLINK_PROC_READ:
+                /* report unexpected error, but try again */
+                if (cqe->res < 0) {
+                    ERROR("unable to read netlink proc event datagram (%s)",
+                          strerror(-cqe->res));
+                }
+                /* update internal model */
+                else {
+                    ans = nl_proc_ev_handle(&nl_msg);
+                    GOTO(ans, clean_bpf_links,
+                         "unable to process netlink proc event");
+                }
+
+                /* refresh read request */
+                uring_add_read_request(NETLINK_PROC_READ,
+                        netlink_fd, &nl_msg, sizeof(nl_msg));
+
+                break;
+            case CTL_ACCEPT:
+                /* report unexpected error, but try again */
+                if (cqe->res < 0) {
+                    ERROR("unable to accept controller connection (%s)",
+                          strerror(-cqe->res));
+                }
+                /* let the appropriate handler take care of the rest *
+                 * it's a rare and inexpensive synchronous operation *
+                 * no use complicating the code further              */
+                else {
+                    ans = flt_handle_ctl(cqe->res);
+                    GOTO(ans, clean_bpf_links,
+                         "unable to process controller request");
+                }
+
+                /* refresh accept request */
+                uring_add_accept_request(CTL_ACCEPT, us_csock_fd, NULL, NULL);
+
+                break;
+            default:
+                WAR("unknown CQE source: %#lx", (uint64_t) cqe->user_data);
         }
-        /* otherwise use the leaf epoll object with the highest priority */
-        else
-            epoll_sel_fd = epoll_p0_fd;
 
-        /* we know that event is available on selected priority level     *
-         * here we prioritize events relating to sockets, not NFQ         *
-         *                                                                *
-         * NOTE: if priority hierarchy was not torn down due to uniform   *
-         *       prioritization, reaching this point guarantees that we   *
-         *       have an event ready to go, so it's safe to do a blocking *
-         *       epoll call; otherwise, we need to enforce the same       *
-         *       timeout as above                                         */
-        if (!cfg.uniform_prio)
-            ans = epoll_wait(epoll_sel_fd, &epoll_ev[0], 1, -1);
-        else
-            ans = epoll_pwait2(epoll_sel_fd, &epoll_ev[0], 1,
-                               &epoll_timeout, NULL);
-        GOTO(ans == -1 && errno != EINTR, clean_bpf_links,
-             "error waiting for epoll events (%s)", strerror(errno));
-        if (ans == 0)
-            goto no_event;
+        /* acknowledge completion queue event */
+        io_uring_cqe_seen(ring, cqe);
 
-        UPDATE_TIMER(epoll_ctr, start_marker);
-        handle_event(epoll_ev[0].data.fd);
-
-no_event:
-        /* after epolling for approx. batch timeout value, check if *
-         * verdicts need to be transmitted                          */
+try_verdict_transmission:
+        /* enforce partial verdict transmission on timeout in case of lack *
+         * of network activity                                             */
         ans = maybe_transmit_verdict(0,
-                    (1 << INPUT_CHAIN) | (1 << OUTPUT_CHAIN));
+                (1 << INPUT_CHAIN) | (1 << OUTPUT_CHAIN));
         ALERT(ans, "unable to set batch verdict");
     }
+
     WAR("exited main loop");
+
+    /******************************** cleanup *********************************/
 
 clean_bpf_links:
     for (auto& bpf_link : bpf_links) {
@@ -778,21 +686,6 @@ clean_netlink_sub:
     ans = nl_proc_ev_subscribe(netlink_fd, false);
     ALERT(ans == -1, "failed to unsubscribe from netlink proc events");
     INFO("unsubscribed from netlink proc events");
-
-clean_epoll_fd_p1:
-    ans = close(epoll_p1_fd);
-    ALERT(ans == -1, "failed to close epoll instance (%s)", strerror(errno));
-    INFO("closed epoll-p1 instance");
-
-clean_epoll_fd_p0:
-    ans = close(epoll_p0_fd);
-    ALERT(ans == -1, "failed to close epoll instance (%s)", strerror(errno));
-    INFO("closed epoll-p0 instance");
-
-clean_epoll_fd:
-    ans = close(epoll_fd);
-    ALERT(ans == -1, "failed to close epoll instance (%s)", strerror(errno));
-    INFO("closed top level epoll instance");
 
 clean_nf_queue_fwd:
     /* bypass cleanup if FORWARD intercept not used */
@@ -852,6 +745,10 @@ clean_us_csock_fd:
     ALERT(ans == -1, "failed to unlink named socket %s (%s)", CTL_SOCK_NAME,
         strerror(errno));
     INFO("destroyed named unix socket");
+
+clean_iouring:
+    uring_deinit();
+    INFO("destroyed io_uring object");
 
     return 0;
 }

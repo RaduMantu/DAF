@@ -522,7 +522,7 @@ process_loop_end:
 }
 
 /* flt_handle_ctl - handles request by user's rule manager
- *  @us_csock_fd : unix connect socket
+ *  @us_dsock_fd : unix data socket
  *
  *  @return : 0 if everything went ok
  *
@@ -531,23 +531,17 @@ process_loop_end:
  *
  * TODO: add client authentication
  */
-int32_t flt_handle_ctl(int32_t us_csock_fd)
+int32_t flt_handle_ctl(int32_t us_dsock_fd)
 {
     vector<struct flt_crit>::iterator it;     /* iterator to certain element */
     vector<struct flt_crit>  *sel_chain;      /* pointer to selected chain   */
     struct ctl_msg           reqm, rspm;      /* request / response message  */
-    int32_t                  us_dsock_fd;     /* unix data socket            */
     ssize_t                  rb, wb;          /* read / written bytes        */
     int32_t                  ans;             /* answer                      */
 
     /* clean message buffers */
     memset(&reqm, 0, sizeof(reqm));
     memset(&rspm, 0, sizeof(rspm));
-
-    /* accept new connection */
-    us_dsock_fd = accept(us_csock_fd, NULL, NULL);
-    RET(us_dsock_fd == -1, -1, "unable to accept new connection (%s)",
-        strerror(errno));
 
     /* read request from client */
     rb = read(us_dsock_fd, &reqm, sizeof(reqm));

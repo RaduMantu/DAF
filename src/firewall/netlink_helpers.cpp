@@ -23,8 +23,6 @@
 #include <linux/netlink.h>      /* NETLINK_CONNECTOR                    */
 #include <linux/sock_diag.h>    /* SOCK_DIAG_BY_FAMILY                  */
 #include <linux/inet_diag.h>    /* inet_diag_req_v2                     */
-#include <linux/connector.h>    /* CN_IDX_PROC                          */
-#include <linux/cn_proc.h>      /* proc_cn_mcast_op, PROC_EVENT_*       */
 #include <queue>                /* priority_queue                       */
 
 #include "sock_cache.h"         /* socket cache API                     */
@@ -36,7 +34,6 @@
 using namespace std;
 
 #pragma clang diagnostic ignored "-Wenum-compare-switch"
-#pragma clang diagnostic ignored "-Wgnu-variable-sized-type-not-at-end"
 
 /******************************************************************************
  ************************** INTERNAL DATA STRUCTURES **************************
@@ -147,38 +144,27 @@ int32_t nl_proc_ev_subscribe(int nl_fd, bool enable)
     return 0;
 }
 
-/* nl_proc_ev_handle - handle single process event
- *  @nl_fd  : netlink socket file descriptor
+/* nl_proc_ev_handle - process netlink proc event datagram
+ *  @msg : netlink message buffer (contains proc event data)
  *
  *  @return : 0 if everything went well
  */
-int32_t nl_proc_ev_handle(int nl_fd)
+int32_t nl_proc_ev_handle(nldgram_t *msg)
 {
-    struct __attribute__ ((aligned(NLMSG_ALIGNTO))) {
-        struct nlmsghdr nl_hdr;             /* netlink header  */
-        struct __attribute__((packed)) {    /* netlink payload */
-            struct cn_msg     cn_msg;
-            struct proc_event proc_ev;
-        };
-    } nlcn_msg;         /* netlink datagram */
-    int32_t  ans;       /* answer           */
-    uint32_t pid;
-
-    /* read netlink datagram */
-    ans = read(nl_fd, &nlcn_msg, sizeof(nlcn_msg));
-    RET(ans == -1, -1, "unable to read netlink datagram");
+    int32_t  ans;       /* answer     */
+    uint32_t pid;       /* process id */
 
     /* determine event type */
-    switch (nlcn_msg.proc_ev.what) {
+    switch (msg->proc_ev.what) {
         case PROC_EVENT_FORK:
             /* update socket cache state */
-            sc_proc_fork(nlcn_msg.proc_ev.event_data.fork.parent_pid,
-                         nlcn_msg.proc_ev.event_data.fork.child_pid);
+            sc_proc_fork(msg->proc_ev.event_data.fork.parent_pid,
+                         msg->proc_ev.event_data.fork.child_pid);
 
             break;
         case PROC_EVENT_EXEC:
             /* update socket cache state */
-            sc_proc_exec(nlcn_msg.proc_ev.event_data.exec.process_pid);
+            sc_proc_exec(msg->proc_ev.event_data.exec.process_pid);
 
             break;
         case PROC_EVENT_PTRACE:
@@ -186,7 +172,7 @@ int32_t nl_proc_ev_handle(int nl_fd)
             break;
         case PROC_EVENT_EXIT:
             /* register exit event to be handled later, in NFQ handler */
-            pid = nlcn_msg.proc_ev.event_data.exit.process_pid;
+            pid = msg->proc_ev.event_data.exit.process_pid;
             exit_events.emplace(pid);
 
             break;

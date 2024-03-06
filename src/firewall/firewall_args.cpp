@@ -77,8 +77,6 @@ static struct argp_option options[] = {
       "(default: no, implies: -r)" },
     { "parallel", 'm', NULL, 0,
       "use multiple threads for event processing (default: no)" },
-    { "uniform-prio", 'u', NULL, 0,
-      "enforce uniform priority for event processing (default: no)" },
     { "skip-ns-switch", 'S', NULL, 0,
       "skip same netns switches on consecutive rules (default: no)" },
     { "partial-read", 'P', NULL, 0,
@@ -125,7 +123,6 @@ struct config cfg  = {
     .no_rescan        = 0,
     .fwd_validate     = 0,
     .in_validate      = 0,
-    .uniform_prio     = 0,
     .skip_ns_switch   = 0,
     .partial_read     = 0,
     .batch_max_count  = 1,
@@ -250,10 +247,6 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         case 'R':
             cfg.retain_maps = 1;
             cfg.no_rescan   = 1;
-            break;
-        /* assign uniform priorities to events */
-        case 'u':
-            cfg.uniform_prio = 1;
             break;
         /* skip same netns switch on consecutive rule eval */
         case 'S':

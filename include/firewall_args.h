@@ -20,7 +20,6 @@ struct config {
     uint8_t  no_rescan        : 1; /* prevent rescanning maps                */
     uint8_t  fwd_validate     : 1; /* validate signature on forward chain    */
     uint8_t  in_validate      : 1; /* validate signature on input chain      */
-    uint8_t  uniform_prio     : 1; /* assign uniform event priority          */
     uint8_t  skip_ns_switch   : 1; /* skip same netns switch on rule eval    */
     uint8_t  partial_read     : 1; /* read only 80 bytes of each packet      */
     uint32_t batch_max_count;      /* maximum number of batched packets      */
