@@ -27,6 +27,9 @@ struct config {
     uint32_t max_nl_bufsz;         /* maximum netlink recv buffer size       */
     uint8_t  sig_proto;            /* protocol to host the signature         */
     sign_t   sig_type;             /* type of appended signature             */
+    uint8_t  pkt_prefetch_cnt;     /* number of prefetched packets per queue */
+    uint32_t uring_queue_depth;    /* depth of io_uring submission queue     */
+    uint32_t uring_kthread_to;     /* io_uring kthread timeout duration      */
 };
 
 extern struct argp   argp;

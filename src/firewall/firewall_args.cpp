@@ -36,6 +36,8 @@ enum {
     ARG_POLICY_IN  = 700,   /* INPUT chain default policy     */
     ARG_POLICY_OUT = 701,   /* OUTPUT chain default policy    */
     ARG_POLICY_FWD = 702,   /* FORWARD chain default policy   */
+    ARG_RING_DEPTH = 800,   /* uring queue depth              */
+    ARG_RING_TO    = 801,   /* uring kthread timeout          */
 };
 
 /* command line arguments */
@@ -87,6 +89,12 @@ static struct argp_option options[] = {
       "batch verdict transmission timeout (default: huge) [μs]" },
     { "max-nl-bufsz", 'n', "NUM", 0,
       "maximum netlink buffer size (default: 256M) [bytes]" },
+    { "pkt-prefetch", 'c', "[1:64]", 0,
+      "number of pkts to prefetch per queue (default: 1)" },
+    { "ring-depth", ARG_RING_DEPTH, "NUM", 0,
+      "io_uring submission queue depth (default:256)" },
+    { "kthread-to", ARG_RING_TO, "NUM", 0,
+      "io_uring kthread timeout (default: huge) [ms]" },
 
     { 0 }
 };
@@ -111,25 +119,28 @@ static char doc[] = "Network traffic filter that verifies identity of processes"
 /* declaration of relevant structures */
 struct argp   argp = { options, parse_opt, args_doc, doc };
 struct config cfg  = {
-    .secret_path      = NULL,
-    .proc_delay       = 50'000,
-    .queue_num_in     = 1,
-    .queue_num_out    = 0,
-    .queue_num_fwd    = 2,
-    .policy_in        = NF_ACCEPT,
-    .policy_out       = NF_ACCEPT,
-    .policy_fwd       = NF_ACCEPT,
-    .retain_maps      = 0,
-    .no_rescan        = 0,
-    .fwd_validate     = 0,
-    .in_validate      = 0,
-    .skip_ns_switch   = 0,
-    .partial_read     = 0,
-    .batch_max_count  = 1,
-    .batch_timeout    = 3'600'000'000,
-    .max_nl_bufsz     = 0x1000'0000,
-    .sig_proto        = IPPROTO_IP,
-    .sig_type         = SIG_NONE,
+    .secret_path       = NULL,
+    .proc_delay        = 50'000,
+    .queue_num_in      = 1,
+    .queue_num_out     = 0,
+    .queue_num_fwd     = 2,
+    .policy_in         = NF_ACCEPT,
+    .policy_out        = NF_ACCEPT,
+    .policy_fwd        = NF_ACCEPT,
+    .retain_maps       = 0,
+    .no_rescan         = 0,
+    .fwd_validate      = 0,
+    .in_validate       = 0,
+    .skip_ns_switch    = 0,
+    .partial_read      = 0,
+    .batch_max_count   = 1,
+    .batch_timeout     = 3'600'000'000,
+    .max_nl_bufsz      = 0x1000'0000,
+    .sig_proto         = IPPROTO_IP,
+    .sig_type          = SIG_NONE,
+    .pkt_prefetch_cnt  = 1,
+    .uring_queue_depth = 256,
+    .uring_kthread_to  = 3'600'000,
 };
 
 /******************************************************************************
@@ -268,6 +279,15 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
         case 'n':
             sscanf(arg, "%u", &cfg.max_nl_bufsz);
             break;
+        case 'c':
+            sscanf(arg, "%hhu", &cfg.pkt_prefetch_cnt);
+            break;
+        case ARG_RING_DEPTH:
+            sscanf(arg, "%u", &cfg.uring_queue_depth);
+            break;
+        case ARG_RING_TO:
+            sscanf(arg, "%u", &cfg.uring_kthread_to);
+            break;
         /* this is invoked after all arguments have been parsed */
         case ARGP_KEY_END:
             /* final sanity check */
@@ -281,6 +301,8 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
                 "cannot sign packets while batching verdicts");
             RET(cfg.batch_max_count == 0, EINVAL,
                 "invalid value for batch_max_count");
+            RET(cfg.pkt_prefetch_cnt == 0 || cfg.pkt_prefetch_cnt > 64, EINVAL,
+                "invalid value for packet prefetch count");
 
             break;
         /* unknown argument */

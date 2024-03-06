@@ -84,6 +84,13 @@ static uint64_t nfq_eval_in_ctr  = 0;
 static uint64_t nfq_read_fwd_ctr = 0;
 static uint64_t nfq_eval_fwd_ctr = 0;
 
+/* netfilter queue packet buffers (cfg.pkt_prefetch_cnt can be <64)   *
+ * TODO: consider dynamically allocating this and removing the 64 cap */
+static uint8_t pkt_buff_in[64][PKT_MAX_SZ];    /* INPUT packet buffer   */
+static uint8_t pkt_buff_out[64][PKT_MAX_SZ];   /* OUTPUT packet buffer  */
+static uint8_t pkt_buff_fwd[64][PKT_MAX_SZ];   /* FORWARD packet buffer */
+
+
 /* sigint_handler - sets <break main loop> variable to true
  */
 static void
@@ -217,7 +224,7 @@ print_stats(void)
 }
 #endif /* ENABLE_STATS */
 
-/* adjust_buffer_size - increases netlink socket recv buffer size
+/* _adjust_buffer_size - increases netlink socket recv buffer size
  *  @fd     : file descriptor of socket
  *  @handle : NetfilterQueue handle used internally for setsockopt()
  *
@@ -233,7 +240,7 @@ print_stats(void)
  *       for more information on this, see the SO_RCVBUF entry in man.7 socket.
  */
 static int32_t
-adjust_buffer_size(int32_t fd, struct nfq_handle *handle)
+_adjust_buffer_size(int32_t fd, struct nfq_handle *handle)
 {
     ssize_t   ans;      /* answer               */
     uint32_t  sock_sz;  /* current socket size  */
@@ -266,6 +273,43 @@ adjust_buffer_size(int32_t fd, struct nfq_handle *handle)
     return 0;
 }
 
+/* _get_free_slot - returns the index of an unused packet buffer
+ *  @allocation : 64b bitfield; 1=allocated, 0=unallocated
+ *  @mask       : corresponds to allocation; 1=usable, 0=unusable
+ *
+ *  @return : an index of an unallocated buffer; -1 if all full
+ *
+ * Although we are able to perform multiple asynchronous reads on a NFQ socket,
+ * we don't have any guarantee that these will occur in any specific order. As
+ * such, we keep track of the buffers that were allocated to an SQE via a
+ * bitfield. The user can decide to enable fewer buffer than what can be
+ * represented in this 64-bit value, hence the mask. This function returns
+ * the index of a buffer that can be allocated. Note that it is the duty of the
+ * caller to properly manage @allocation.
+ *
+ * NOTE: At the moment, this is unused since we simply refresh the read
+ *       request with the same index encoded into the user data from the CQE.
+ *       One day, employing this might have some merit. E.g.: dynamically
+ *       adjusting the number of prefetches.
+ */
+static int32_t __attribute__((unused))
+_get_free_slot(uint64_t allocation, uint64_t mask)
+{
+    uint64_t free_slot;
+
+    /* corner case bsr can't detect (avoidable) */
+    if (unlikely(allocation == mask))
+        return -1;
+
+    /* invert bits associated to existing slots *
+     * find most significant bit that's set     */
+    asm volatile ("bsr %[dst], %[src]"
+                 : [dst] "=r" (free_slot)
+                 : [src] "r" (~allocation & mask));
+
+    return free_slot;
+}
+
 /******************************************************************************
  **************************** PROGRAM ENTRY POINT *****************************
  ******************************************************************************/
@@ -280,6 +324,7 @@ int32_t
 main(int argc, char *argv[])
 {
     int32_t                   ans;              /* answer                     */
+    uint64_t                  buffer_idx;       /* buffer index               */
     struct sigaction          act;              /* signal response action     */
     struct rlimit             rlim;             /* resource limit             */
     struct bpf_object         *bpf_obj;         /* eBPF object file           */
@@ -292,12 +337,7 @@ main(int argc, char *argv[])
     struct sockaddr_un        us_name;          /* unix socket name           */
     struct io_uring           *ring;            /* io_uring object            */
     struct io_uring_cqe       *cqe;             /* completion queue entry     */
-
-    /* async io buffers & other data */
-    uint8_t         pkt_buff_in[PKT_MAX_SZ];    /* INPUT packet buffer        */
-    uint8_t         pkt_buff_out[PKT_MAX_SZ];   /* OUTPUT packet buffer       */
-    uint8_t         pkt_buff_fwd[PKT_MAX_SZ];   /* FORWARD packet buffer      */
-    nldgram_t       nl_msg;                     /* netlink proc event message */
+    nldgram_t                 nl_msg;           /* netlink proc event message */
 
 
     /* parse command line arguments */
@@ -343,15 +383,10 @@ main(int argc, char *argv[])
     DIE(ans, "unable to initialize packet signer context");
     INFO("initialized packet signer context");
 
-    /* initialize io_uring module */
-    ring = uring_init(128, 3'600'000);
-    DIE(!ring, "unable to initialize io_uring");
-    INFO("initialized io_uring");
-
     /* create ctl unix socket */
     us_csock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    GOTO(us_csock_fd == -1, clean_iouring,
-         "unable to open AF_UNIX socket (%s)", strerror(errno));
+    DIE(us_csock_fd == -1, "unable to open AF_UNIX socket (%s)",
+        strerror(errno));
     INFO("created ctl unix socket");
 
     /* bind ctl unix socket to name */
@@ -482,9 +517,14 @@ main(int argc, char *argv[])
         strerror(errno));
     INFO("listening for new connections on ctl unix socket");
 
+    /* initialize io_uring module */
+    ring = uring_init(cfg.uring_queue_depth, cfg.uring_kthread_to);
+    GOTO(!ring, clean_nf_queue_fwd, "unable to initialize io_uring");
+    INFO("initialized io_uring");
+
     /* subscribe to netlink proc events */
     ans = nl_proc_ev_subscribe(netlink_fd, true);
-    GOTO(ans == -1, clean_nf_queue_fwd,
+    GOTO(ans == -1, clean_iouring,
         "failed to subscribe to netlink proc events");
     INFO("now subscribed to netlink proc events");
 
@@ -503,15 +543,18 @@ main(int argc, char *argv[])
     INFO("main loop starting");
 
     /* place initial requests on the submission queue */
-    uring_add_read_request(NFQ_INPUT_READ,
-            nfqueue_fd_in, pkt_buff_in, sizeof(pkt_buff_in));
+    for (size_t i = 0; i < cfg.pkt_prefetch_cnt; i++) {
+        /* for NFQ, encode the buffer index in the most significant dword */
+        uring_add_read_request(NFQ_INPUT_READ | (i << 32),
+                nfqueue_fd_in, pkt_buff_in[i], PKT_MAX_SZ);
 
-    uring_add_read_request(NFQ_OUTPUT_READ,
-            nfqueue_fd_out, pkt_buff_out, sizeof(pkt_buff_out));
+        uring_add_read_request(NFQ_OUTPUT_READ | (i << 32),
+                nfqueue_fd_out, pkt_buff_out[i], PKT_MAX_SZ);
 
-    if (cfg.fwd_validate) {
-        uring_add_read_request(NFQ_FORWARD_READ,
-                nfqueue_fd_fwd, pkt_buff_fwd, sizeof(pkt_buff_fwd));
+        if (cfg.fwd_validate) {
+            uring_add_read_request(NFQ_FORWARD_READ | (i << 32),
+                    nfqueue_fd_fwd, pkt_buff_fwd[i], PKT_MAX_SZ);
+        }
     }
 
     uring_add_poll_request(BPF_RINGBUF_POLL, bpf_map_fd, EPOLLIN);
@@ -528,13 +571,17 @@ main(int argc, char *argv[])
         if (ans)
             goto try_verdict_transmission;
 
-        /* match CQE with origin subsystem */
-        switch (cqe->user_data) {
+        /* extract buffer index (makes sense only for NFQ read op) */
+        buffer_idx = ((uint64_t) cqe->user_data) >> 32;
+
+        /* match CQE with origin subsystem                  *
+         * NOTE: mask most significant dword (buffer index) */
+        switch (cqe->user_data & 0xffffffff) {
             case NFQ_INPUT_READ:
                 /* double netlink socket if overfull */
                 if (cqe->res == -ENOBUFS) {
                     WAR("netlink socket overfull; adjusting buffer size");
-                    ans = adjust_buffer_size(nfqueue_fd_in, nf_handle_in);
+                    ans = _adjust_buffer_size(nfqueue_fd_in, nf_handle_in);
                     GOTO(ans, clean_bpf_links,
                          "unable to adjust socket buffer size");
                 }
@@ -545,20 +592,20 @@ main(int argc, char *argv[])
                 }
                 /* establish verdict for packet */
                 else {
-                    nfq_handle_packet(nf_handle_in, (char *) pkt_buff_in,
-                                      cqe->res);
+                    nfq_handle_packet(nf_handle_in,
+                            (char *) pkt_buff_in[buffer_idx], cqe->res);
                 }
 
                 /* refresh read request */
-                uring_add_read_request(NFQ_INPUT_READ,
-                        nfqueue_fd_in, pkt_buff_in, sizeof(pkt_buff_in));
+                uring_add_read_request(NFQ_INPUT_READ | (buffer_idx << 32),
+                        nfqueue_fd_in, pkt_buff_in[buffer_idx], PKT_MAX_SZ);
 
                 break;
             case NFQ_OUTPUT_READ:
                 /* double netlink socket if overfull */
                 if (cqe->res == -ENOBUFS) {
                     WAR("netlink socket overfull; adjusting buffer size");
-                    ans = adjust_buffer_size(nfqueue_fd_out, nf_handle_out);
+                    ans = _adjust_buffer_size(nfqueue_fd_out, nf_handle_out);
                     GOTO(ans, clean_bpf_links,
                          "unable to adjust socket buffer size");
                 }
@@ -569,20 +616,20 @@ main(int argc, char *argv[])
                 }
                 /* establish verdict for packet */
                 else {
-                    nfq_handle_packet(nf_handle_out, (char *) pkt_buff_out,
-                                      cqe->res);
+                    nfq_handle_packet(nf_handle_out,
+                            (char *) pkt_buff_out[buffer_idx], cqe->res);
                 }
 
                 /* refresh read request */
-                uring_add_read_request(NFQ_OUTPUT_READ,
-                        nfqueue_fd_out, pkt_buff_out, sizeof(pkt_buff_out));
+                uring_add_read_request(NFQ_OUTPUT_READ | (buffer_idx << 32),
+                        nfqueue_fd_out, pkt_buff_out[buffer_idx], PKT_MAX_SZ);
 
                 break;
             case NFQ_FORWARD_READ:
                 /* double netlink socket if overfull */
                 if (cqe->res == -ENOBUFS) {
                     WAR("netlink socket overfull; adjusting buffer size");
-                    ans = adjust_buffer_size(nfqueue_fd_fwd, nf_handle_fwd);
+                    ans = _adjust_buffer_size(nfqueue_fd_fwd, nf_handle_fwd);
                     GOTO(ans, clean_bpf_links,
                          "unable to adjust socket buffer size");
                 }
@@ -593,13 +640,13 @@ main(int argc, char *argv[])
                 }
                 /* establish verdict for packet */
                 else {
-                    nfq_handle_packet(nf_handle_fwd, (char *) pkt_buff_fwd,
-                                      cqe->res);
+                    nfq_handle_packet(nf_handle_fwd,
+                            (char *) pkt_buff_fwd[buffer_idx], cqe->res);
                 }
 
                 /* refresh read request */
-                uring_add_read_request(NFQ_FORWARD_READ,
-                        nfqueue_fd_fwd, pkt_buff_fwd, sizeof(pkt_buff_fwd));
+                uring_add_read_request(NFQ_FORWARD_READ | (buffer_idx << 32),
+                        nfqueue_fd_fwd, pkt_buff_fwd[buffer_idx], PKT_MAX_SZ);
 
                 break;
             case BPF_RINGBUF_POLL:
@@ -687,6 +734,10 @@ clean_netlink_sub:
     ALERT(ans == -1, "failed to unsubscribe from netlink proc events");
     INFO("unsubscribed from netlink proc events");
 
+clean_iouring:
+    uring_deinit();
+    INFO("destroyed io_uring object");
+
 clean_nf_queue_fwd:
     /* bypass cleanup if FORWARD intercept not used */
     if (!cfg.fwd_validate)
@@ -745,10 +796,6 @@ clean_us_csock_fd:
     ALERT(ans == -1, "failed to unlink named socket %s (%s)", CTL_SOCK_NAME,
         strerror(errno));
     INFO("destroyed named unix socket");
-
-clean_iouring:
-    uring_deinit();
-    INFO("destroyed io_uring object");
 
     return 0;
 }
