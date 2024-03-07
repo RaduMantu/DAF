@@ -24,10 +24,13 @@ uring_init(uint32_t entries, uint32_t thread_idle)
     struct io_uring_params params;      /* uring creation parameters */
     int32_t                ans;         /* answer                    */
 
-    /* prepare io_uring arguments */
+    /* prepare io_uring arguments                                         *
+     * NOTE: if you ever want to parallelize this app and issue requests  *
+     *       from more than one thread, remove IORING_SETUP_SINGLE_ISSUER */
     memset(&params, 0, sizeof(params));
     params.flags |= IORING_SETUP_SQPOLL;
     params.flags |= IORING_FEAT_SQPOLL_NONFIXED;
+    params.flags |= IORING_SETUP_SINGLE_ISSUER;
     params.sq_thread_idle = thread_idle;
 
     /* initialize io_uring parameters */
