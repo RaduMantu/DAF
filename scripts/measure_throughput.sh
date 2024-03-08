@@ -26,7 +26,6 @@ usage() {
     echo '    FW_LOGFILE : firewall log file                (default:/dev/null)'
     echo '    FW_RULES   : number of rules to insert        (default:0)'
     echo '    NO_RESCAN  : prevent active va space rescan   (default:no)'
-    echo '    UNI_PRIO   : set uniform event priority       (default:no)'
     echo '    SKIP_NS_SW : skip useless netns switches      (default:no)'
     echo '    PART_CPY   : partial packet copy to u/s       (default:no)'
     echo '    BATCH_SZ   : maximum verdict batch size       (default:1)'
@@ -61,10 +60,6 @@ FW_RULES=${FW_RULES:-0}
 # change "set" variables to actually sound parameters
 if [ ! -z "${NO_RESCAN}" ]; then
     NO_RESCAN='-R'
-fi
-
-if [ ! -z "${UNI_PRIO}" ]; then
-    UNI_PRIO='-u'
 fi
 
 if [ ! -z "${SKIP_NS_SW}" ]; then
@@ -142,11 +137,11 @@ if [ ! -z "${FW_ENABLE}" ]; then
 
     # start firewall in background
     # NOTE: assuming that you're running this as root (EUID=0)
-    taskset 0x01                                           \
-    ./bin/app-fw                                           \
-        ${NO_RESCAN} ${UNI_PRIO} ${SKIP_NS_SW} ${PART_CPY} \
-        ${BATCH_SZ} ${BATCH_TO}                            \
-        -e bin/syscall_probe.o ${FW_PKT_SIG}               \
+    taskset -c 0-1                             \
+    ./bin/app-fw                               \
+        ${NO_RESCAN} ${SKIP_NS_SW} ${PART_CPY} \
+        ${BATCH_SZ} ${BATCH_TO}                \
+        -e bin/syscall_probe.o ${FW_PKT_SIG}   \
         &>>${FW_LOGFILE} &
 
     # append harcoded rules to firewall

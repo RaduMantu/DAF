@@ -31,10 +31,10 @@ tcp_battery() {
             | tee -a logs/tcp_baseline_nofw-${round}.log
 
             # firewall enabled but no rules; has all NFQ-related optimizations
-            FW_ENABLE=1 FW_RULES=0                         \
-            UNI_PRIO=1 PART_CPY=1 BATCH_SZ=100 BATCH_TO=50 \
-            ./scripts/measure_throughput.sh 2>&1           \
-            | tee -a logs/tcp_rule-0_fw-uPb-${round}.log
+            FW_ENABLE=1 FW_RULES=0               \
+            PART_CPY=1 BATCH_SZ=100 BATCH_TO=50  \
+            ./scripts/measure_throughput.sh 2>&1 \
+            | tee -a logs/tcp_rule-0_fw-Pb-${round}.log
 
             # firewall w/ one rule; no optimizations
             FW_ENABLE=1 FW_RULES=1               \
@@ -53,23 +53,17 @@ tcp_battery() {
             ./scripts/measure_throughput.sh 2>&1 \
             | tee -a logs/tcp_rule-1_fw-RS-${round}.log
 
-            # previous + uniform event prioritization
-            FW_ENABLE=1 FW_RULES=1               \
-            NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1  \
-            ./scripts/measure_throughput.sh 2>&1 \
-            | tee -a logs/tcp_rule-1_fw-RSu-${round}.log
-
             # previous + partial packet copy in userspace
-            FW_ENABLE=1 FW_RULES=1                         \
-            NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 \
-            ./scripts/measure_throughput.sh 2>&1           \
-            | tee -a logs/tcp_rule-1_fw-RSuP-${round}.log
+            FW_ENABLE=1 FW_RULES=1               \
+            NO_RESCAN=1 SKIP_NS_SW=1 PART_CPY=1  \
+            ./scripts/measure_throughput.sh 2>&1 \
+            | tee -a logs/tcp_rule-1_fw-RSP-${round}.log
 
             # previous + vedict batching (arbitrary parameters)
-            FW_ENABLE=1 FW_RULES=1                                                  \
-            NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 BATCH_SZ=100 BATCH_TO=50 \
-            ./scripts/measure_throughput.sh 2>&1                                    \
-            | tee -a logs/tcp_rule-1_fw-RSuPb-${round}.log
+            FW_ENABLE=1 FW_RULES=1                                       \
+            NO_RESCAN=1 SKIP_NS_SW=1 PART_CPY=1 BATCH_SZ=100 BATCH_TO=50 \
+            ./scripts/measure_throughput.sh 2>&1                         \
+            | tee -a logs/tcp_rule-1_fw-RSPb-${round}.log
         done
     done
 }
@@ -81,22 +75,18 @@ udp_battery() {
             ./scripts/measure_throughput.sh 2>&1          \
             | tee -a logs/udp_baseline_fw-${round}.log
 
-            FW_ENABLE=1 FW_RULES=0 UNI_PRIO=1 IPERF_UDP=5 \
+            FW_ENABLE=1 FW_RULES=0 PART_CPY=1 IPERF_UDP=5 \
             ./scripts/measure_throughput.sh 2>&1          \
-            | tee -a logs/udp_baseline_fwu-${round}.log
+            | tee -a logs/udp_baseline_fwP-${round}.log
 
-            FW_ENABLE=1 FW_RULES=0 UNI_PRIO=1 PART_CPY=1 IPERF_UDP=5 \
-            ./scripts/measure_throughput.sh 2>&1                     \
-            | tee -a logs/udp_baseline_fwuP-${round}.log
+            FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 PART_CPY=1 IPERF_UDP=5 \
+            ./scripts/measure_throughput.sh 2>&1                                   \
+            | tee -a logs/udp_rule-1_fwRSP-${round}.log
 
-            FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 IPERF_UDP=5 \
-            ./scripts/measure_throughput.sh 2>&1                                              \
-            | tee -a logs/udp_rule-1_fwRSuP-${round}.log
-
-            FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 IPERF_UDP=5 \
-            BATCH_SZ=100 BATCH_TO=1000                                                        \
-            ./scripts/measure_throughput.sh 2>&1                                              \
-            | tee -a logs/udp_rule-1_fwRSuPb-${round}.log
+            FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 PART_CPY=1 IPERF_UDP=5 \
+            BATCH_SZ=100 BATCH_TO=1000                                             \
+            ./scripts/measure_throughput.sh 2>&1                                   \
+            | tee -a logs/udp_rule-1_fwRSPb-${round}.log
         done
     done
 }
@@ -128,8 +118,8 @@ buffer_var() {
         } | tee -a logs/buffy_rule-1_fwRSuPU-${max_sz_bytes}.log
 
         for ((mtu = 1000; mtu <= 9000; mtu += 1000)); do
-            MTU=${mtu} FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 UNI_PRIO=1 PART_CPY=1 \
-            ./scripts/measure_throughput.sh 2>&1 | tee -a logs/buffy_rule-1_fwRSuPU-${max_sz_bytes}.log
+            MTU=${mtu} FW_ENABLE=1 FW_RULES=1 NO_RESCAN=1 SKIP_NS_SW=1 PART_CPY=1 \
+            ./scripts/measure_throughput.sh 2>&1 | tee -a logs/buffy_rule-1_fwRSPU-${max_sz_bytes}.log
         done
     done
 
