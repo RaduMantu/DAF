@@ -38,10 +38,6 @@ CLANGFLAGS = -D__KERNEL__ -D__BPF_TRACING__ -emit-llvm -O2 -fno-stack-protector 
 LLCFLAGS   = -march=bpf -filetype=obj
 
 # build time options
-ifeq ($(ENABLE_STATS),y)
-CXXFLAGS += -DENABLE_STATS
-endif
-
 ifeq ($(DISABLE_ORDERING),y)
 CXXFLAGS += -DDISABLE_ORDERING
 endif
