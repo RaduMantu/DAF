@@ -45,10 +45,6 @@ update_hmac_udp(uint8_t *data, EVP_MD_CTX *md_ctx)
     struct iphdr  *iph  = (struct iphdr *) data;
     struct udphdr *udph = (struct udphdr *) &data[iph->ihl *4];
 
-    /* update digest with immutable UDP fields */
-    ans = EVP_DigestSignUpdate(md_ctx, &udph->len, sizeof(udph->len));
-    RET(ans != 1, -1, "unable to update digest");
-
     /* update digest with payload */
     ans = EVP_DigestSignUpdate(md_ctx, &data[iph->ihl * 4 + sizeof(*udph)],
                 udph->len - sizeof(*udph));
@@ -69,17 +65,6 @@ update_hmac_tcp(uint8_t *data, EVP_MD_CTX *md_ctx)
     int32_t       ans;    /* answer */
     struct iphdr  *iph  = (struct iphdr *) data;
     struct tcphdr *tcph = (struct tcphdr *) &data[iph->ihl *4];
-
-    /* update digest with immutable TCP fields *
-     * TODO: add some flags as well            */
-    /* ans = EVP_DigestSignUpdate(md_ctx, &tcph->seq, sizeof(tcph->seq)); */
-    /* RET(ans != 1, -1, "unable to update digest"); */
-
-    /* ans = EVP_DigestSignUpdate(md_ctx, &tcph->window, sizeof(tcph->window)); */
-    /* RET(ans != 1, -1, "unable to update digest"); */
-
-    /* ans = EVP_DigestSignUpdate(md_ctx, &tcph->urg_ptr, sizeof(tcph->urg_ptr)); */
-    /* RET(ans != 1, -1, "unable to update digest"); */
 
     /* update digest with payload */
     ans = EVP_DigestSignUpdate(md_ctx, &data[(iph->ihl + tcph->doff) * 4],
