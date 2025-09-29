@@ -108,8 +108,8 @@ xt_daf_match(const struct sk_buff *skb, struct xt_action_param *par)
         return false;
     }
 
-    /* check that the option codepoint and leght are correct *
-     * NOTE: assuming that our option is the first           */
+    /* check that the option codepoint and length are correct *
+     * NOTE: assuming that our option is the first            */
     if (ops_sec_p[0] != 0x5e || ops_sec_p[1] != 34)
         return false;
 
