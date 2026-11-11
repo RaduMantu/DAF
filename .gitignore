@@ -3,3 +3,10 @@ compile_commands.json
 bin/
 obj/
 tests/cve-2022-3602/certs/
+*.cmd
+*.ko
+*.o
+*.so
+*.symvers
+*.order
+*.mod*
