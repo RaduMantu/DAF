@@ -1,6 +1,6 @@
 #pragma once
 
-#include <stdint.h>             /* [u]int*_t                      */
+#include <cstdint>
 #include <sys/socket.h>         /* AF_NETLINK, SOCK_DGRAM         */
 #include <linux/netlink.h>      /* NETLINK_INET_DIAG              */
 #include <linux/cn_proc.h>      /* proc_cn_mcast_op, PROC_EVENT_* */

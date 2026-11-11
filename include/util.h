@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stdio.h>      /* fprintf      */
-#include <stdint.h>     /* [u]int*_t    */
+#include <cstdint>
 #include <stdlib.h>     /* exit         */
 #include <errno.h>      /* errno        */
 #include <string.h>     /* strerror     */

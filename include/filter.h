@@ -1,7 +1,6 @@
 #pragma once
 
-#include <stdint.h> /* [u]int*_t */
-#include <vector>   /* vector    */
+#include <cstdint>
 
 /******************************************************************************
  ************************** MATCH RULE SPECIFICATION **************************

@@ -18,7 +18,6 @@
  */
 
 #include <stdio.h>
-#include <stdint.h>             /* [u]int*_t                          */
 #include <signal.h>             /* signal, siginterrupt, pthread_kill */
 #include <unistd.h>             /* read, write, close, unlink, nice   */
 #include <netinet/in.h>         /* IPPROTO_*                          */
@@ -55,7 +54,7 @@ using namespace std;
 #define PKT_MAX_SZ    (0xffff + 128)
 #define CTL_SOCK_NAME "/tmp/app_fw.socket"
 
-static bool terminate = false;    /* program pending termination */
+static bool should_terminate = false;    /* program pending termination */
 
 /* configured by main thread */
 static int32_t            us_csock_fd;      /* unix connection socket       */
@@ -96,7 +95,7 @@ static uint8_t pkt_buff_fwd[64][PKT_MAX_SZ];   /* FORWARD packet buffer */
 static void
 sigint_handler(int)
 {
-    terminate = true;
+    should_terminate = true;
 }
 
 #ifdef ENABLE_STATS
@@ -565,7 +564,7 @@ main(int argc, char *argv[])
     uring_add_accept_request(CTL_ACCEPT, us_csock_fd, NULL, NULL);
 
     /* await event completions */
-    while (!terminate) {
+    while (!should_terminate) {
         /* check if new completion queue entry is available */
         ans = io_uring_peek_cqe(ring, &cqe);
         if (ans)

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <stdint.h>     /* [u]int*_t    */
+#include <cstdint>
 
 /* signature types */
 enum sign_t {

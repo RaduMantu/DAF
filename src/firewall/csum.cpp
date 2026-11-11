@@ -17,7 +17,6 @@
  * along with ops-inject. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <stdint.h>         /* [u]int*_t        */
 #include <netinet/ip.h>     /* iphdr            */
 #include <netinet/tcp.h>    /* tcphdr           */
 #include <netinet/udp.h>    /* udphdr           */

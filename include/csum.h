@@ -1,6 +1,6 @@
 #pragma once
 
-#include <stdint.h>         /* [u]int*_t */
+#include <cstdint>
 #include <netinet/ip.h>     /* iphdr     */
 
 uint16_t csum_16b1c(uint64_t sum, uint16_t *buffer, size_t nbytes);

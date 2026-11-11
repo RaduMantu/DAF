@@ -1,7 +1,10 @@
 #pragma once
 
-#include <stdio.h>      /* size_t */
-#include <stdint.h>     /* [u]int*_t */
+#include <linux/types.h>
+#include <linux/stddef.h>
+#include <stdint.h>
+
+#define size_t uint64_t
 
 /* event sample transmitted via ring buffer */
 struct sample {

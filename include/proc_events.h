@@ -1,6 +1,5 @@
 #pragma once
 
-#include <stdint.h>     /* [u]int*_t */
 #include "util.h"       /* rdtsc     */
 
 /* ts_event - timestamped event-related values (e.g.: pid)

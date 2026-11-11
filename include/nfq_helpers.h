@@ -1,6 +1,6 @@
 #pragma once
 
-#include <stdint.h>             /* [u]int*_t */
+#include <cstdint>
 #include <linux/netfilter.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
 

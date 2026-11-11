@@ -1,8 +1,7 @@
 #pragma once
 
-#include <stdint.h>         /* [u]int*_t     */
+#include <cstdint>
 #include <set>              /* set           */
-#include <unordered_set>    /* unordered_set */
 #include <string>           /* string        */
 
 int32_t               hc_init(uint8_t _rm, uint8_t _nr);

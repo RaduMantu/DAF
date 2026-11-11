@@ -1,7 +1,7 @@
 #pragma once
 
 #include <argp.h>
-#include <stdint.h>
+#include <cstdint>
 
 #include "filter.h"
 

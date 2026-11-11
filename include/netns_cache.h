@@ -1,6 +1,6 @@
 #pragma once
 
-#include <stdint.h>     /* [u]int*_t */
+#include <cstdint>
 #include <utility>      /* pair      */
 
 int32_t nnc_get_fd(char *netns_path);

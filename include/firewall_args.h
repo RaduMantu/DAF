@@ -1,7 +1,7 @@
 #pragma once
 
 #include <argp.h>       /* argp API  */
-#include <stdint.h>     /* [u]int*_t */
+#include <cstdint>
 
 #include "signer.h"     /* sign_t    */
 

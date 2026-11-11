@@ -17,7 +17,6 @@
  * along with app-fw. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <stdint.h>         /* [u]int*_t          */
 #include <sys/socket.h>     /* socket             */
 #include <sys/un.h>         /* sockaddr_un        */
 #include <unistd.h>         /* read, write, close */

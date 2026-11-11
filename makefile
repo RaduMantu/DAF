@@ -23,7 +23,7 @@ $(call check-def,BASE_FREQ)
 
 # compilation related parameters
 CXX      = clang++
-CXXFLAGS = -std=c++20 -ggdb -O2 -DBASE_FREQ=$(BASE_FREQ)
+CXXFLAGS = -std=c++23 -ggdb -O2 -DBASE_FREQ=$(BASE_FREQ)
 LDFLAGS  = $(shell pkg-config --libs \
                 libnetfilter_queue   \
                 libbpf               \
@@ -34,7 +34,7 @@ LDFLAGS  = $(shell pkg-config --libs \
 
 CLANG      = clang
 LLC        = llc
-CLANGFLAGS = -D__KERNEL__ -D__BPF_TRACING__ -emit-llvm -O2 -fno-stack-protector -g
+CLANGFLAGS = -D__KERNEL__ -D__BPF_TRACING__ -target bpf -emit-llvm -O2 -fno-stack-protector -g
 LLCFLAGS   = -march=bpf -filetype=obj
 
 # build time options

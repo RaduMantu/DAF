@@ -1,7 +1,7 @@
 #pragma once
 
-#include <stdint.h>         /* [u]int*_t */
 #include <unordered_set>
+#include <cstdint>
 
 int32_t sc_init(void);
 void    sc_open_fd(uint32_t pid, uint8_t fd);
